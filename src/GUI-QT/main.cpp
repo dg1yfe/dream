@@ -214,7 +214,7 @@ int main(int argc, char **argv) {
       if (mode == "receive") {
         consolerx(Settings, app);
       } else if (mode == "transmit") {
-        txgc(Settings, app);
+        txgc(Settings, app, false);
       } else {
         string usage(Settings.UsageArguments());
         for (;;) {
