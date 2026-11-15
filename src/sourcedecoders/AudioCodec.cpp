@@ -124,15 +124,8 @@ CAudioCodec::GetEncoder(CAudioParam::EAudCod eAudioCoding, bool bCanReturnNullPt
 bool
 CAudioCodec::CanEncodeSBR(CAudioParam::EAudCod eAudioCoding)
 {
-#ifdef HAVE_LIBFDK_AAC
-    /* TODO: move into FdkAacCodec (override returning CanEncode()), then
-       drop this. The patched fdk-aac DRM encoder does AAC+SBR(+PS). */
-    if (dynamic_cast<FdkAacCodec*>(this) != nullptr)
-        return CanEncode(eAudioCoding)
-            && (eAudioCoding != CAudioParam::AC_AAC || FdkAacCodec::HasDrmEncoder());
-#else
+    /* codecs that can encode SBR override this (see FdkAacCodec) */
     (void)eAudioCoding;
-#endif
     return false;
 }
 

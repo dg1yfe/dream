@@ -47,6 +47,9 @@ public:
     /* Encoder */
 	virtual std::string EncGetVersion();
 	virtual bool CanEncode(CAudioParam::EAudCod eAudioCoding);
+	/* the patched fdk-aac DRM encoder does AAC+SBR(+PS) */
+	virtual bool CanEncodeSBR(CAudioParam::EAudCod c) { return CanEncode(c); }
+	virtual bool CanEncodePS(CAudioParam::EAudCod c) { return CanEncode(c); }
     virtual bool EncOpen(const CAudioParam& AudioParam, unsigned long& lNumSampEncIn, unsigned long& lMaxBytesEncOut);
     virtual int Encode(CVector<_SAMPLE>&, unsigned long, CVector<uint8_t>&, unsigned long);
     virtual void EncClose();
