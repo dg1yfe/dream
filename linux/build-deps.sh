@@ -195,9 +195,7 @@ else
     n=$(echo "$files" | wc -l)
     [ "$n" -gt 100 ] || { echo "error: only $n libxaac sources found" >&2; exit 1; }
     # portable C (no asm/intrinsics in the encoder); -fwrapv as upstream
-    # -include string.h: patch 0008 calls memset without <string.h>; clang only warns,
-    # gcc >= 14 makes implicit function declarations an error
-    CF="-O3 -fPIC -std=gnu99 -fwrapv -w -include string.h -I$src/encoder -I$src/encoder/drc_src -I$src/common"
+    CF="-O3 -fPIC -std=gnu99 -fwrapv -w -I$src/encoder -I$src/encoder/drc_src -I$src/common"
     # shellcheck disable=SC2086
     compile_all "$WORK/libxaac-obj" "$CF" "$src" $files
     EXP="ixheaace_get_lib_id_strings ixheaace_create ixheaace_process ixheaace_delete"

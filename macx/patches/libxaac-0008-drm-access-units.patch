@@ -1,6 +1,6 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: DREAM <dream@invalid>
-Date: Sun, 15 Nov 2026 16:22:48 +0100
+Date: Sun, 15 Nov 2026 19:51:30 +0100
 Subject: [PATCH] DRM access units (ETSI ES 201 980) with frame size limits
 
 New input fields: drm_mode (create time), drm_frame_bytes / drm_frame_bytes_min (read
@@ -47,10 +47,10 @@ written for DREAM from the standards.
  encoder/ixheaace_static_bits.h         |   5 +
  encoder/ixheaace_struct_def.h          |   3 +
  encoder/ixheaace_version_number.h      |   4 +-
- encoder/ixheaace_write_bitstream.c     | 283 +++++++++++++++++++++++++
+ encoder/ixheaace_write_bitstream.c     | 284 +++++++++++++++++++++++++
  encoder/ixheaace_write_bitstream.h     |  15 ++
  encoder/libxaacenc.cmake               |   3 +-
- 24 files changed, 918 insertions(+), 18 deletions(-)
+ 24 files changed, 919 insertions(+), 18 deletions(-)
  create mode 100644 encoder/ixheaace_drm.c
  create mode 100644 encoder/ixheaace_drm.h
 
@@ -1154,10 +1154,10 @@ index 8a82b56..b353759 100644
 +#define LIB_NAME "IXHEAACE+DRM"
  #define ITTIAM_VER " : V2.0"
 diff --git a/encoder/ixheaace_write_bitstream.c b/encoder/ixheaace_write_bitstream.c
-index 9851f26..ecf3df0 100644
+index 9851f26..1c4d574 100644
 --- a/encoder/ixheaace_write_bitstream.c
 +++ b/encoder/ixheaace_write_bitstream.c
-@@ -16,6 +16,7 @@
+@@ -16,10 +16,12 @@
   *
   *****************************************************************************
   * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
@@ -1165,7 +1165,12 @@ index 9851f26..ecf3df0 100644
   */
  
  #include <limits.h>
-@@ -826,3 +827,285 @@ IA_ERRORCODE ia_enhaacplus_enc_write_bitstream(
+ #include <stddef.h>
++#include <string.h>
+ #include "ixheaac_type_def.h"
+ #include "ixheaac_constants.h"
+ #include "impd_drc_common_enc.h"
+@@ -826,3 +828,285 @@ IA_ERRORCODE ia_enhaacplus_enc_write_bitstream(
  
    return IA_NO_ERROR;
  }
