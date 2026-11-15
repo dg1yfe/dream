@@ -54,7 +54,7 @@ codesign --force --deep --sign - "$app"
 codesign --verify --deep "$app"
 
 # Sanity: nothing may still point into Homebrew or the build tree.
-if find "$app" -type f -perm -u+x -exec otool -L {} \; 2>/dev/null | grep -E "$BREW_PREFIX|$REPO" ; then
+if find "$app" -type f -perm -u+x -exec otool -L {} \; 2>/dev/null | grep -E "^[[:space:]]+($BREW_PREFIX|$REPO)" ; then
     echo "warning: the bundle still references libraries outside itself (see above)" >&2
 fi
 

@@ -51,6 +51,7 @@ option(DREAM_WITH_ALSA      "Use ALSA sound I/O if found (Linux)" OFF)
 option(DREAM_WITH_JACK      "Use JACK sound I/O if found" OFF)
 option(DREAM_WITH_BWS       "Build the BWS (broadcast website) viewer with QtWebEngine" OFF)
 option(DREAM_HARDENING      "Enable compiler hardening flags" ON)
+option(DREAM_QT5COMPAT      "Link Qt6::Core5Compat (only needed for not-yet-ported Qt5 APIs such as QRegExp)" OFF)
 
 include(sources)
 include(hardening)
@@ -270,8 +271,9 @@ endif()
 # ---------------------------------------------------------------------------
 if(NOT DREAM_CONSOLE_ONLY)
     find_package(Qt6 6.2 REQUIRED COMPONENTS Core Gui Widgets Network Xml Svg)
-    # Transitional: QRegExp & friends, until the Qt6 source port is complete.
-    find_package(Qt6 QUIET OPTIONAL_COMPONENTS Core5Compat)
+    if(DREAM_QT5COMPAT)
+        find_package(Qt6 REQUIRED COMPONENTS Core5Compat)
+    endif()
 
     # Qwt (Qt6 build). Homebrew: framework at opt/qwt/lib/qwt.framework.
     find_path(QWT_INCLUDE_DIR qwt_plot.h
@@ -341,7 +343,7 @@ if(NOT DREAM_CONSOLE_ONLY)
     target_include_directories(dream PRIVATE "${DREAM_SRC}/GUI-QT" "${QWT_INCLUDE_DIR}")
     target_link_libraries(dream PRIVATE
         Qt6::Core Qt6::Gui Qt6::Widgets Qt6::Network Qt6::Xml Qt6::Svg "${QWT_LIBRARY}")
-    if(TARGET Qt6::Core5Compat)
+    if(DREAM_QT5COMPAT)
         target_link_libraries(dream PRIVATE Qt6::Core5Compat)
     endif()
     if(DREAM_WITH_BWS)

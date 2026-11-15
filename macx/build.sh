@@ -47,7 +47,7 @@ BREW_PREFIX=$(brew --prefix)
 # ---------------------------------------------------------------- Homebrew deps
 BREW_TOOLS="cmake ninja pkgconf"
 BREW_LIBS="fftw speexdsp portaudio libsndfile opus hamlib gpsd soapysdr faad2"
-BREW_QT="qtbase qtsvg qt5compat qwt"
+BREW_QT="qtbase qtsvg qwt"
 want="$BREW_TOOLS $BREW_LIBS"
 [ $console = 1 ] || want="$want $BREW_QT"
 missing=""
