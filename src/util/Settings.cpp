@@ -616,6 +616,55 @@ CSettings::ParseArguments(int argc, char **argv)
 			continue;
 		}
 #endif
+		/* Stop after this many seconds of signal (transmitter: written,
+		   receiver: read). 0: run until stopped ---------------------------- */
+		if (GetNumericArgument(argc, argv, i, "--duration", "--duration",
+							   0, 1e7, rArgument))
+		{
+			Put("command", "duration", rArgument);
+			continue;
+		}
+
+		/* File input paced to real time (1, default) or as fast as possible */
+		if (GetNumericArgument(argc, argv, i, "--filepace", "--filepace",
+							   0, 1, rArgument))
+		{
+			Put("command", "filepace", int (rArgument));
+			continue;
+		}
+
+		/* Transmitter settings (same keys as in the ini file) -------------- */
+		{
+			static const char* const TxService = "Transmitter Service 1";
+			static const struct { const char* opt; const char* section; const char* key; } TxOpts[] = {
+				{ "--codec",         TxService,     "codec" },          /* AAC | Opus */
+				{ "--aacmode",       TxService,     "aac_mode" },       /* mono | pstereo | stereo */
+				{ "--aacrate",       TxService,     "aac_samplerate" }, /* 12000 | 24000 */
+				{ "--sbr",           TxService,     "sbr" },            /* 0 | 1 */
+				{ "--opuschannels",  TxService,     "Opus_Channels" },  /* OC_MONO | OC_STEREO */
+				{ "--opusbandwidth", TxService,     "Opus_Bandwith" },  /* OB_NB .. OB_FB */
+				{ "--opusfec",       TxService,     "Opus_FEC" },       /* 0 | 1 */
+				{ "--opussignal",    TxService,     "Opus_Signal" },    /* OG_VOICE | OG_MUSIC */
+				{ "--robustness",    "Transmitter", "robustness" },     /* RM_ROBUSTNESS_MODE_A..D */
+				{ "--spectocc",      "Transmitter", "spectocc" },       /* SO_0 .. SO_5 */
+				{ "--protlevel",     "Transmitter", "protlevel" },      /* MSC protection level */
+				{ "--msc",           "Transmitter", "msc" },            /* CS_2_SM | CS_3_SM | ... */
+				{ "--interleaver",   "Transmitter", "interleaver" },    /* SI_LONG | SI_SHORT */
+			};
+			bool bFound = false;
+			for (size_t k = 0; k < sizeof(TxOpts) / sizeof(TxOpts[0]); k++)
+			{
+				if (GetStringArgument(argc, argv, i, TxOpts[k].opt, TxOpts[k].opt, strArgument))
+				{
+					Put(TxOpts[k].section, TxOpts[k].key, strArgument);
+					bFound = true;
+					break;
+				}
+			}
+			if (bFound)
+				continue;
+		}
+
 		/* invoke test functionality ---------------------------------------- */
 		if (GetStringArgument(argc, argv, i, "--test", "--test", strArgument))
 		{
@@ -711,6 +760,24 @@ CSettings::UsageArguments()
 		"  --sigsrate <n>               set signal sound card sample rate [Hz] (allowed values: 24000, 48000, 96000, 192000)\n"
 		"  -I <s>, --snddevin <s>       set sound in device\n"
 		"  -O <s>, --snddevout <s>      set sound out device\n"
+		"                               (transmitter: a name ending in .wav writes the signal to that file)\n"
+		"  --duration <r>               stop after <r> seconds of signal written (-t) or read (receiver)\n"
+		"  --filepace <b>               pace file input to real time (0: off, as fast as possible; 1: on, default)\n"
+		"Transmitter options (-t), stored in the ini file like the GUI settings:\n"
+		"  -f <s>                       read the audio input from file <s>\n"
+		"  --codec <s>                  AAC | Opus\n"
+		"  --aacmode <s>                mono | pstereo | stereo\n"
+		"  --aacrate <n>                AAC core sample rate 12000 | 24000\n"
+		"  --sbr <b>                    AAC SBR (0: off; 1: on)\n"
+		"  --opuschannels <s>           OC_MONO | OC_STEREO\n"
+		"  --opusbandwidth <s>          OB_NB | OB_MB | OB_WB | OB_SWB | OB_FB\n"
+		"  --opusfec <b>                Opus forward error correction (0: off; 1: on)\n"
+		"  --opussignal <s>             OG_VOICE | OG_MUSIC\n"
+		"  --robustness <s>             RM_ROBUSTNESS_MODE_A | _B | _C | _D\n"
+		"  --spectocc <s>               SO_0 .. SO_5\n"
+		"  --protlevel <n>              MSC protection level\n"
+		"  --msc <s>                    CS_2_SM | CS_3_SM | CS_3_HMSYM | CS_3_HMMIX\n"
+		"  --interleaver <s>            SI_LONG | SI_SHORT\n"
 		"  -U <n>, --sigupratio <n>     set signal upscale ratio (allowed values: 1, 2)\n"
 #ifdef HAVE_LIBHAMLIB
 		"  -M <n>, --hamlib-model <n>   set Hamlib radio model ID\n"

@@ -49,6 +49,8 @@ int main(int argc, char **argv) {
     Settings.Load(argc, argv);
 
     string mode = Settings.Get("command", "mode", string());
+    /* --duration: stop after this many seconds of signal (0: no limit) */
+    const _REAL rDuration = Settings.Get("command", "duration", _REAL(0.0));
     if (mode == "receive") {
       CDRMSimulation DRMSimulation;
       CDRMReceiver DRMReceiver(&Settings);
@@ -80,6 +82,9 @@ int main(int argc, char **argv) {
 #ifdef USE_CONSOLEIO
             eRunState = CConsoleIO::Update();
 #endif
+            if (rDuration > 0.0 &&
+                DRMReceiver.GetReceiveData()->GetSecondsRead() >= rDuration)
+              eRunState = STOPPED;
           } while (eRunState == RUNNING);
         } while (eRunState == RESTART);
         DRMReceiver.CloseSoundInterfaces();
@@ -109,6 +114,9 @@ int main(int argc, char **argv) {
           /* Start the transmitter run routine */
           do {
             DRMTransmitter.process();
+            if (rDuration > 0.0 &&
+                DRMTransmitter.GetTransData()->GetSecondsWritten() >= rDuration)
+              eRunState = STOPPED;
           } while (eRunState == RUNNING && !DRMTransmitter.CanSoftStopExit());
 
         } while (eRunState == RESTART);

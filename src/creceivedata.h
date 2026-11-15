@@ -85,6 +85,9 @@ public:
     void SetSoundInterface(CSoundInInterface* device );
     CSoundInInterface* GetSoundInterface() { return pSound; }
 
+    /* Seconds of input signal read so far (not reset on re-initialisation) */
+    _REAL GetSecondsRead() const { return rSecondsRead; }
+
     void Stop();
 
     void SetInChanSel(const EInChanSel eNS) {
@@ -100,6 +103,7 @@ public:
                      const int iPSDOverlap = 0);
 
 protected:
+    _REAL rSecondsRead;
     CSignalLevelMeter		SignalLevelMeter;
 
 

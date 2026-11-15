@@ -1,13 +1,14 @@
 #include "aacsuperframe.h"
 
 AACSuperFrame::AACSuperFrame():AudioSuperFrame (),
-    lengthPartA(0),lengthPartB(0),superFrameDurationMilliseconds(0),headerBytes(0),aacCRC()
+    lengthPartA(0),lengthPartB(0),superFrameDurationMilliseconds(0),headerBytes(0),allBorders(false),aacCRC()
 {
 }
 
 void AACSuperFrame::init(const CAudioParam &audioParam, ERobMode eRobMode, unsigned int lengthPartA, unsigned int lengthPartB)
 {
-    size_t numFrames;
+    size_t numFrames = 0;
+    allBorders = false;
     switch(eRobMode) {
     case ERobMode::RM_ROBUSTNESS_MODE_A:
     case ERobMode::RM_ROBUSTNESS_MODE_B:
@@ -41,6 +42,13 @@ void AACSuperFrame::init(const CAudioParam &audioParam, ERobMode eRobMode, unsig
     case ERobMode::RM_NO_MODE_DETECTED:
         break;
     }
+    if (audioParam.eAudioCoding == CAudioParam::AC_OPUS) {
+        /* Opus (experimental, Dream transmitter): 20 frames of 20 ms, all frame
+           borders signalled, one CRC byte per frame as for AAC */
+        numFrames = 20;
+        superFrameDurationMilliseconds = 400;
+        allBorders = true;
+    }
     audioFrame.resize(numFrames);
     aacCRC.resize(numFrames);
     this->lengthPartA = lengthPartA;
@@ -50,9 +58,9 @@ void AACSuperFrame::init(const CAudioParam &audioParam, ERobMode eRobMode, unsig
 bool AACSuperFrame::header(CVectorEx<_BINARY>& header)
 {
     bool ok = true;
-    unsigned numBorders = audioFrame.size()-1;
+    unsigned numBorders = allBorders ? audioFrame.size() : audioFrame.size()-1;
     unsigned headerBits = 12*numBorders;
-    if (numBorders == 9) {
+    if (numBorders & 1) {
         headerBits += 4;
     }
     headerBytes = headerBits / 8;
@@ -65,7 +73,7 @@ bool AACSuperFrame::header(CVectorEx<_BINARY>& header)
         if(frameBorder<previous_border) frameBorder += 4096; // Table 11 Note 2
         size_t frameLength = frameBorder-previous_border; // frame border in bytes
         sumOfFrameLengths += frameLength;
-        if(sumOfFrameLengths<audioPayloadLength) {
+        if(sumOfFrameLengths<audioPayloadLength || (allBorders && sumOfFrameLengths==audioPayloadLength)) {
             audioFrame[n].resize(frameLength);
             previous_border = frameBorder;
         }
@@ -73,9 +81,12 @@ bool AACSuperFrame::header(CVectorEx<_BINARY>& header)
             ok = false;
         }
     }
-    if (numBorders == 9) {
+    if (numBorders & 1) {
         // reserved
         header.Separate(4);
+    }
+    if (allBorders) {
+        return ok;
     }
     size_t frameLength = audioPayloadLength - previous_border;
     if(ok) {

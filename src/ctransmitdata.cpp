@@ -36,7 +36,7 @@ CTransmitData::CTransmitData() : pFileTransmitter(nullptr),
     pSound(nullptr),
     eOutputFormat(OF_REAL_VAL), rDefCarOffset(VIRTUAL_INTERMED_FREQ),
     strOutFileName("test/TransmittedData.txt"), bUseSoundcard(true),
-    bAmplified(false), bHighQualityIQ(false)
+    bAmplified(false), bHighQualityIQ(false), rSecondsWritten(0.0)
 {
     
 }
@@ -119,6 +119,9 @@ void CTransmitData::FlushData()
     }
 
     iBlockCnt = 0;
+
+    if (iSampleRate > 0)
+        rSecondsWritten += _REAL(vecsDataOut.Size() / 2) / _REAL(iSampleRate);
 
     if (bUseSoundcard)
     {

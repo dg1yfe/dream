@@ -194,7 +194,7 @@ CAudioFileIn::Init(int iNewSampleRate, int iNewBufferSize, bool bNewBlocking)
         delete pacer;
         pacer = nullptr;
     }
-    if (bNewBlocking)
+    if (bNewBlocking && bPacing)
     {
         double interval = double(iNewBufferSize/2) / double(iNewSampleRate);
         pacer = new CPacer(uint64_t(1e9*interval));

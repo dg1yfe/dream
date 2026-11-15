@@ -50,6 +50,15 @@ static void SetEncodedAudioMode(CAudioParam& AudioParam, int iNumChannels,
         else if (!(bSBR && AudioParam.eAudioMode == CAudioParam::AM_P_STEREO))
             AudioParam.eAudioMode = CAudioParam::AM_STEREO;
     }
+    else if (AudioParam.eAudioCoding == CAudioParam::AC_OPUS)
+    {
+        /* Opus (experimental, not part of the DRM standard): the receiver
+           (CAudioParam::setFromType9Bits) only accepts SBR flag 0 and audio
+           mode "mono" in the SDC; the channel count is carried in the Opus
+           packets themselves */
+        AudioParam.eSBRFlag = CAudioParam::SB_NOT_USED;
+        AudioParam.eAudioMode = CAudioParam::AM_MONO;
+    }
     else
     {
         AudioParam.eAudioMode =
@@ -453,7 +462,7 @@ CAudioSourceEncoderImplementation::InitInternalTx(CParameter & Parameters,
         case CAudioParam::AC_OPUS:
         {
             /* Set various encoder parameters */
-            iNumChannels = 2;
+            iNumChannels = (Parameters.Service[iCurSelServ].AudioParam.eOPUSChan == CAudioParam::OC_MONO) ? 1 : 2;
             iNumAudioFrames = 20;
             lEncSamprate = 48000; // used later to get ratio
             Parameters.Service[iCurSelServ].AudioParam.eAudioSamplRate = CAudioParam::AS_48KHZ;	/* Set parameter in global struct */
@@ -468,8 +477,9 @@ CAudioSourceEncoderImplementation::InitInternalTx(CParameter & Parameters,
             /* The audio_payload_length is derived from the length of the audio
                super frame (data_length_of_part_A + data_length_of_part_B)
                subtracting the audio super frame overhead (bytes used for the audio
-               super frame header()) */
-            iAudioPayloadLen = iTotAudFraSizeBits / SIZEOF__BYTE - iNumHeaderBytes;
+               super frame header() and the one CRC byte per frame, which the
+               Opus encoder delivers in front of each frame like AAC) */
+            iAudioPayloadLen = iTotAudFraSizeBits / SIZEOF__BYTE - iNumHeaderBytes - iNumAudioFrames /* for CRCs */ ;
 
             const int iActEncOutBytes = (int) (iAudioPayloadLen / iNumAudioFrames);
 
@@ -500,6 +510,10 @@ CAudioSourceEncoderImplementation::InitInternalTx(CParameter & Parameters,
            SBR flag according to the encoder) */
         SetEncodedAudioMode(Parameters.Service[iCurSelServ].AudioParam,
                             iNumChannels, lNumSampEncIn);
+
+        /* Signal the text message only if its bytes are really reserved at the
+           end of the stream (the receiver removes them from the audio payload) */
+        Parameters.Service[iCurSelServ].AudioParam.bTextflag = bUsingTextMessage;
 
         /* Init storage for actual data, CRCs and frame lengths */
         audio_frame.Init(iNumAudioFrames, lMaxBytesEncOut);
@@ -673,7 +687,7 @@ CAudioSourceEncoderImplementation::InitInternalRx(CParameter& Parameters,
     {
         /* Set various encoder parameters */
         lEncSamprate = 48000;
-        iNumChannels = 2;
+        iNumChannels = (Parameters.Service[0].AudioParam.eOPUSChan == CAudioParam::OC_MONO) ? 1 : 2;
         iNumAudioFrames = 20;
         Parameters.Service[0].AudioParam.eAudioSamplRate = CAudioParam::AS_48KHZ;	/* Set parameter in global struct */
 
@@ -687,8 +701,8 @@ CAudioSourceEncoderImplementation::InitInternalRx(CParameter& Parameters,
         /* The audio_payload_length is derived from the length of the audio
            super frame (data_length_of_part_A + data_length_of_part_B)
            subtracting the audio super frame overhead (bytes used for the audio
-           super frame header()) */
-        iAudioPayloadLen = iTotAudFraSizeBits / SIZEOF__BYTE - iNumHeaderBytes;
+           super frame header() and the one CRC byte per frame) */
+        iAudioPayloadLen = iTotAudFraSizeBits / SIZEOF__BYTE - iNumHeaderBytes - iNumAudioFrames /* for CRCs */ ;
 
         const int iActEncOutBytes = (int) (iAudioPayloadLen / iNumAudioFrames);
 

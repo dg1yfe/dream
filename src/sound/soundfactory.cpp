@@ -60,6 +60,7 @@
 #endif
 
 #include "audiofilein.h"
+#include "audiofileout.h"
 #include "soundnull.h"
 
 
@@ -184,5 +185,6 @@ CSoundFactoryOut::CSoundFactoryOut():CSoundFactory<CSoundOutInterface>()
   drivers.push_back(new COpenSLESOut());
 #endif
 
+  drivers.push_back(new CAudioFileOut());
   drivers.push_back(new CSoundOutNull());
 }

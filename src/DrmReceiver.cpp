@@ -36,6 +36,7 @@
 #include "util/Settings.h"
 #include "util/FileTyper.h"
 #include "tuner.h"
+#include "sound/audiofilein.h"
 
 const int
 CDRMReceiver::MAX_UNLOCKED_COUNT = 2;
@@ -184,6 +185,10 @@ CDRMReceiver::SetInputDevice(string s)
         soundinfactory.SetItem(device);
         CSoundInInterface* pSound = soundinfactory.GetItem();
         ReceiveData.SetSoundInterface(pSound);
+        /* File input: real time pacing can be switched off (--filepace 0) */
+        CAudioFileIn* pFile = dynamic_cast<CAudioFileIn*>(pSound);
+        if (pFile != nullptr && pSettings != nullptr)
+            pFile->SetPacing(pSettings->Get("command", "filepace", int(1)) != 0);
         CTuner *pTuner = dynamic_cast<CTuner*>(pSound);
         fprintf(stderr, "Read pTuner = %p\n", pTuner);
         if (pTuner)

@@ -82,6 +82,9 @@ public:
 
     void FlushData();
 
+    /* Seconds of signal handed to the output so far */
+    _REAL GetSecondsWritten() const { return rSecondsWritten; }
+
 protected:
     FILE*			pFileTransmitter;
     CSoundOutInterface*	pSound;
@@ -104,6 +107,7 @@ protected:
 
     bool			bAmplified;
     bool			bHighQualityIQ;
+    _REAL			rSecondsWritten;
     CVector<_REAL>	vecrReHist;
 
     void HilbertFilt(_COMPLEX& vecData);

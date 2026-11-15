@@ -296,7 +296,10 @@ CAudioSourceDecoder::InitInternal(CParameter & Parameters)
         }
         else {
             AACSuperFrame *p = new AACSuperFrame();
-            p->init(service.AudioParam,  Parameters.GetWaveMode(), unsigned(Parameters.Stream[curAudioStreamID].iLenPartA), unsigned(Parameters.Stream[curAudioStreamID].iLenPartB));
+            /* the text message bytes (end of the stream) are not part of the audio super frame */
+            const int iLenPartB = Parameters.Stream[curAudioStreamID].iLenPartB
+                    - (bTextMessageUsed ? NUM_BYTES_TEXT_MESS_IN_AUD_STR : 0);
+            p->init(service.AudioParam,  Parameters.GetWaveMode(), unsigned(Parameters.Stream[curAudioStreamID].iLenPartA), unsigned(iLenPartB));
             pAudioSuperFrame = p;
         }
         /* Get decoder instance */

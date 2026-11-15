@@ -15,6 +15,7 @@ public:
 private:
     unsigned lengthPartA, lengthPartB, superFrameDurationMilliseconds;
     unsigned headerBytes;
+    bool allBorders; /* Opus: the length of every frame is signalled */
     std::vector<uint8_t> aacCRC;
     bool header(CVectorEx<_BINARY>&);
 };

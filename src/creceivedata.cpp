@@ -47,7 +47,9 @@ CReceiveData::CReceiveData():
     pSound(nullptr),
     vecrInpData(INPUT_DATA_VECTOR_SIZE, 0.0),
     bFippedSpectrum(false), eInChanSelection(CS_MIX_CHAN), iPhase(0),spectrumAnalyser()
-{}
+{
+    rSecondsRead = 0.0;
+}
 
 CReceiveData::~CReceiveData()
 {
@@ -103,6 +105,9 @@ void CReceiveData::ProcessDataInternal(CParameter& Parameters)
 
     if(bBad)
         return;
+
+    if (iSampleRate > 0)
+        rSecondsRead += _REAL(iOutputBlockSize) / _REAL(iSampleRate);
 
     /* Upscale if ratio greater than one */
     if (iUpscaleRatio > 1)

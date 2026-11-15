@@ -48,6 +48,9 @@ public:
     virtual int			GetSampleRate() {return iRequestedSampleRate;}
 
     virtual bool	Init(int iNewSampleRate, int iNewBufferSize, bool bNewBlocking);
+    /* Pace blocking reads to real time (default). Off: read as fast as the
+       caller consumes (batch processing of files) */
+    void		SetPacing(bool bNewPacing) { bPacing = bNewPacing; }
     virtual bool 	Read(CVector<short>& psData, CParameter &Parameters);
     virtual void 		Close();
 	virtual std::string GetVersion() { return "Dream Audio File Reader"; }
@@ -66,6 +69,7 @@ protected:
     int					iFileChannels;
     int                iOutBlockSize;
     CPacer*				pacer;
+    bool				bPacing = true;
     CAudioResample*		ResampleObjL;
     CAudioResample*		ResampleObjR;
     short*				buffer;

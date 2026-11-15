@@ -479,6 +479,10 @@ FdkAacCodec::CanEncode(CAudioParam::EAudCod eAudioCoding)
     case CAudioParam::AC_MPEGAAC:
         return true;
     case CAudioParam::AC_AAC:
+        /* DREAM_NO_FDK_ENCODER=1 hides the fdk DRM encoder (e.g. to test the
+           faac fallback); decoding is not affected */
+        if (getenv("DREAM_NO_FDK_ENCODER") != nullptr && atoi(getenv("DREAM_NO_FDK_ENCODER")) != 0)
+            return false;
         return HasDrmEncoder();
     default:
         return false;

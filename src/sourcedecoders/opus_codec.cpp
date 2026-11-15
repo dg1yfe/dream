@@ -703,7 +703,8 @@ bool
 OpusCodec::EncOpen(const CAudioParam& AudioParam, unsigned long& lNumSampEncIn, unsigned long& lMaxBytesEncOut)
 {
     unsigned long iSampleRate = 48000;
-    unsigned iChannels = 1;
+    /* must match the channel count CAudioSourceEncoderImplementation feeds */
+    unsigned iChannels = (AudioParam.eOPUSChan == CAudioParam::OC_MONO) ? 1 : 2;
 	hOpusEncoder = opusEncOpen(iSampleRate, iChannels,
         0, &lNumSampEncIn, &lMaxBytesEncOut);
 	return hOpusEncoder != nullptr;
