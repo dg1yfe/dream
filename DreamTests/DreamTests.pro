@@ -122,4 +122,5 @@ SOURCES += \
     ../src/resample/caudioresample.cpp \
     ../src/sourcedecoders/reverb.cpp \
     ../src/sourcedecoders/concealment.cpp \
+    ../src/sourcedecoders/peaklimiter.cpp \
     ../src/sourcedecoders/caudioreverb.cpp

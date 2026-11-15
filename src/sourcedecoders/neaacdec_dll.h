@@ -53,7 +53,22 @@ typedef struct NeAACDecFrameInfo
     unsigned char ps;
 } NeAACDecFrameInfo;
 
+typedef struct NeAACDecConfiguration
+{
+    unsigned char defObjectType;
+    unsigned long defSampleRate;
+    unsigned char outputFormat;
+    unsigned char downMatrix;
+    unsigned char useOldADTSFormat;
+    unsigned char dontUpSampleImplicitSBR;
+} NeAACDecConfiguration, *NeAACDecConfigurationPtr;
+
+#define FAAD_FMT_16BIT  1
+#define FAAD_FMT_FLOAT  4
+
 typedef NeAACDecHandle (NEAACDECAPI NeAACDecOpen_t)(void);
+typedef NeAACDecConfigurationPtr (NEAACDECAPI NeAACDecGetCurrentConfiguration_t)(NeAACDecHandle);
+typedef unsigned char (NEAACDECAPI NeAACDecSetConfiguration_t)(NeAACDecHandle, NeAACDecConfigurationPtr);
 typedef char (NEAACDECAPI NeAACDecInitDRM_t)(NeAACDecHandle*, unsigned long, unsigned char);
 typedef void (NEAACDECAPI NeAACDecClose_t)(NeAACDecHandle);
 typedef void* (NEAACDECAPI NeAACDecDecode_t)(NeAACDecHandle,NeAACDecFrameInfo*,unsigned char *,unsigned long);

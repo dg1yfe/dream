@@ -48,12 +48,15 @@
 
 CAudioSourceDecoder::CAudioSourceDecoder()
     :	bWriteToFile(false), TextMessage(false),
-      bUseReverbEffect(true), codec(nullptr), bConceal(true), bLastBlockPlayed(false),
+      bUseReverbEffect(true), codec(nullptr), bLimiter(true), bConceal(true), bLastBlockPlayed(false),
       iTestBadStart(-1), iTestBadCount(0), iTestBadPeriod(0), lFrameCount(0)
 {
     /* DREAM_CONCEAL=0: no concealment of lost frames (fade out and mute) */
     const char* env = getenv("DREAM_CONCEAL");
     bConceal = env == nullptr || atoi(env) != 0;
+    /* DREAM_LIMITER=0: hard clipping at full scale instead of the limiter */
+    env = getenv("DREAM_LIMITER");
+    bLimiter = env == nullptr || atoi(env) != 0;
     /* test hook DREAM_TEST_BAD_FRAMES=start:count[:period]: treat these
        audio frames (counted from the start) as lost: their CRC byte is
        corrupted before decoding, so the decoder sees (and may conceal) them */
@@ -264,6 +267,11 @@ CAudioSourceDecoder::ProcessDataInternal(CParameter & Parameters)
         Parameters.AudioComponentStatus[unsigned(Parameters.GetCurSelAudioService())].SetStatus(status);
         Parameters.Unlock();
 
+        /* Limit peaks above full scale (after concealment and fades; exact
+           zeros stay zeros, the gain is exactly 1 below the threshold) */
+        if (bLimiter && iResOutBlockSize > 0)
+            limiter.Process(vecTempResBufOutCurLeft, vecTempResBufOutCurRight, iResOutBlockSize);
+
         /* Conversion from _REAL to _SAMPLE with special function */
         for (int i = 0; i < iResOutBlockSize; i++)
         {
@@ -441,6 +449,7 @@ CAudioSourceDecoder::InitInternal(CParameter & Parameters)
 
         reverb.Init(outputSampleRate, bUseReverbEffect);
         concealer.Init(outputSampleRate);
+        limiter.Init(outputSampleRate);
         bLastBlockPlayed = false;
 
         /* With this parameter we define the maximum length of the output

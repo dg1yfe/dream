@@ -38,6 +38,7 @@
 #include "../MSC/audiosuperframe.h"
 #include "reverb.h"
 #include "concealment.h"
+#include "peaklimiter.h"
 
 #ifdef HAVE_SPEEX
 # include "../resample/speexresampler.h"
@@ -123,6 +124,9 @@ protected:
     Reverb reverb;
     /* Concealment of short losses (before Reverb fades out to silence) */
     CPcmConcealer concealer;
+    /* Peaks above full scale are limited, not clipped (DREAM_LIMITER=0: off) */
+    CPeakLimiter limiter;
+    bool bLimiter;
     bool bConceal;          /* DREAM_CONCEAL=0 disables it (A/B tests) */
     bool bLastBlockPlayed;  /* last block went to the output as audio */
     int iTestBadStart, iTestBadCount, iTestBadPeriod; /* DREAM_TEST_BAD_FRAMES */

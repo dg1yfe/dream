@@ -63,6 +63,11 @@ public:
 	virtual void EncUpdate(CAudioParam& AudioParam);
 protected:
 	NeAACDecHandle hFaadDecoder;
+	bool bFaadFloat; /* faad delivers float samples (+-1.0 = full scale) */
+	_REAL FaadSample(const void* buf, size_t i) const {
+		return bFaadFloat ? _REAL(static_cast<const float*>(buf)[i]) * 32768.0
+		                  : _REAL(static_cast<const _SAMPLE*>(buf)[i]);
+	}
 	faacEncHandle hFaacEncoder;
 	unsigned int iEncChannels;
     std::string fileName(const CParameter& Parameters) const;
