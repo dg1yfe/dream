@@ -1,0 +1,132 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 23:03:37 +0100
+Subject: [PATCH] SBR at 960-sample frames: transient timing, inverse
+ filtering, PS bit count
+
+Measured on decoded DRM signals (12 kHz core + SBR/PS, 17.2 and 24.5 kbit/s):
+the high band overshot after sibilants and plosives, clicks lost their attack and
+the high band of sparse acoustic material sounded tonal.
+
+- ixheaace_sbr_tran_det_hp.c: with 960-sample frames the transient candidates
+  start at QMF slot 15 (odd), so detected transients came out one envelope row
+  late. The search window starts one slot later.
+- ixheaace_sbr_tran_det.c: for 960-sample HE-AAC frames (80 ms SBR frames at a
+  12 kHz core) the transient threshold is 5/13 of the configured value.
+- ixheaace_sbr_inv_filtering_estimation.c: the non-LD decision multiplied the
+  detector values by EPS (1e-18) instead of adding it, which put every value
+  below the first region border: inverse filtering was never enabled. It now
+  adds EPS like the LD branch. This also changes the 1024-sample output.
+- ixheaace_ps_bitenc.c: the PS payload length was truncated to 8 bits when it
+  was appended to the SBR data.
+---
+ encoder/ixheaace_ps_bitenc.c                    |  6 ++++--
+ encoder/ixheaace_sbr_inv_filtering_estimation.c | 10 +++++++---
+ encoder/ixheaace_sbr_tran_det.c                 |  6 ++++++
+ encoder/ixheaace_sbr_tran_det_hp.c              |  8 ++++++++
+ 4 files changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/encoder/ixheaace_ps_bitenc.c b/encoder/ixheaace_ps_bitenc.c
+index bae4813..8b8ca27 100644
+--- a/encoder/ixheaace_ps_bitenc.c
++++ b/encoder/ixheaace_ps_bitenc.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include "ixheaac_type_def.h"
+@@ -35,7 +36,7 @@
+ 
+ static WORD32 iexheaax_append_bitstream(ixheaace_bit_buf_handle hdl_bitbuf_write,
+                                         ixheaace_bit_buf_handle hdl_bitbuf_read,
+-                                        UWORD8 num_bits) {
++                                        WORD32 num_bits) {
+   WORD32 idx;
+   UWORD32 value;
+ 
+@@ -296,7 +297,8 @@ ixheaace_append_ps_bitstream(ixheaace_pstr_ps_enc pstr_ps_handle, ixheaace_bit_b
+   if (!hdl_bs) {
+     return ia_enhaacplus_enc_get_bits_available(&pstr_ps_handle->ps_bit_buf);
+   } else {
+-    UWORD8 num_bits = (UWORD8)ia_enhaacplus_enc_get_bits_available(&pstr_ps_handle->ps_bit_buf);
++    /* PS data may exceed 255 bits (high frequency resolution, several envelopes) */
++    WORD32 num_bits = ia_enhaacplus_enc_get_bits_available(&pstr_ps_handle->ps_bit_buf);
+ 
+     ixheaace_write_bits(hdl_bs, EXTENSION_ID_PS_CODING, SI_SBR_EXTENSION_ID_BITS);
+     iexheaax_append_bitstream(hdl_bs, &pstr_ps_handle->ps_bit_buf, num_bits);
+diff --git a/encoder/ixheaace_sbr_inv_filtering_estimation.c b/encoder/ixheaace_sbr_inv_filtering_estimation.c
+index 3a2865f..2648953 100644
+--- a/encoder/ixheaace_sbr_inv_filtering_estimation.c
++++ b/encoder/ixheaace_sbr_inv_filtering_estimation.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+@@ -139,11 +140,14 @@ static ixheaace_invf_mode ixheaace_decision_algorithm(
+ 
+     energy = (FLOAT32)(SBR_INV_LOG_2 * 1.5f * log(ptr_detector_values.avg_energy + EPS));
+   } else {
++    /* "+ EPS" as in the LD branch: multiplying by EPS (1e-18) put every value far below the
++       first region border, so inverse filtering was never switched on (always INVF_OFF) and
++       the high band kept the full tonality of the patched low band */
+     org_quota_mean_filt =
+-        (FLOAT32)(SBR_INV_LOG_2 * 3.0f * log(ptr_detector_values.org_quota_mean_filt * EPS));
++        (FLOAT32)(SBR_INV_LOG_2 * 3.0f * log(ptr_detector_values.org_quota_mean_filt + EPS));
+     sbr_quota_mean_filt =
+-        (FLOAT32)(SBR_INV_LOG_2 * 3.0f * log(ptr_detector_values.sbr_quota_mean_filt * EPS));
+-    energy = (FLOAT32)(SBR_INV_LOG_2 * 1.5f * log(ptr_detector_values.avg_energy * EPS));
++        (FLOAT32)(SBR_INV_LOG_2 * 3.0f * log(ptr_detector_values.sbr_quota_mean_filt + EPS));
++    energy = (FLOAT32)(SBR_INV_LOG_2 * 1.5f * log(ptr_detector_values.avg_energy + EPS));
+   }
+   memcpy(quant_steps_org_tmp, ptr_detector_params->quant_steps_org,
+          num_regions_orig * sizeof(quant_steps_org_tmp[0]));
+diff --git a/encoder/ixheaace_sbr_tran_det.c b/encoder/ixheaace_sbr_tran_det.c
+index ab25fbe..084f481 100644
+--- a/encoder/ixheaace_sbr_tran_det.c
++++ b/encoder/ixheaace_sbr_tran_det.c
+@@ -274,6 +274,12 @@ VOID ixheaace_create_sbr_transient_detector(
+ 
+   pstr_sbr_trans_detector->prev_low_band_energy = 0;
+   pstr_sbr_trans_detector->tran_thr = (FLOAT32)tran_thr;
++  if ((sbr_codec == HEAAC_SBR) && (0 == is_ld_sbr) && (1 == frame_flag_480)) {
++    /* 960-sample HE-AAC (DRM, 12/24 kHz core): one SBR frame is 80 ms at a 12 kHz core.
++       A more sensitive transient detector gives speech onsets and decays their own
++       envelopes (less high-band overshoot after sibilants and plosives). */
++    pstr_sbr_trans_detector->tran_thr = (FLOAT32)(tran_thr * 5 / 13);
++  }
+ 
+   pstr_sbr_trans_detector->ptr_thresholds = &(pstr_sbr_trans_detector->sbr_thresholds[0]);
+ 
+diff --git a/encoder/ixheaace_sbr_tran_det_hp.c b/encoder/ixheaace_sbr_tran_det_hp.c
+index 2fb8846..2f465dc 100644
+--- a/encoder/ixheaace_sbr_tran_det_hp.c
++++ b/encoder/ixheaace_sbr_tran_det_hp.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <math.h>
+@@ -139,6 +140,13 @@ VOID ixheaace_detect_transient(FLOAT32 **ptr_energies,
+   WORD32 no_cols = pstr_sbr_trans_det->no_cols;
+   WORD32 qmf_start_sample = no_cols + time_step * 4;
+   FLOAT32 int_thr = (FLOAT32)pstr_sbr_trans_det->tran_thr / (FLOAT32)pstr_sbr_trans_det->no_rows;
++  if (no_cols == 30) {
++    /* 960-sample frames: the candidates are built from QMF slot 15 on (half a frame, odd),
++       so the pairs of slots that share an energy row are offset by one against the 1024
++       layout and transients came out one envelope row late (clicks lost their attack,
++       speech onsets were smeared). Start the search one slot later. */
++    qmf_start_sample += 1;
++  }
+   FLOAT32 *ptr_trans = &(pstr_sbr_trans_det->ptr_transients[qmf_start_sample]);
+ 
+   ptr_tran_vector[0] = 0;
