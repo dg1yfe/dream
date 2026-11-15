@@ -160,7 +160,7 @@ void platform_init(QCoreApplication &app) {
 #endif
 #if defined(__APPLE__)
   /* find plugins on MacOs when deployed in a bundle */
-  app.addLibraryPath(app.applicationDirPath() + "../PlugIns");
+  app.addLibraryPath(app.applicationDirPath() + "/../PlugIns");
 #endif
 #ifdef USE_OPENSL
   (void)slCreateEngine(&engineObject, 0, nullptr, 0, nullptr, nullptr);

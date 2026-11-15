@@ -34,6 +34,7 @@
 #include <QLayout>
 #include "OpusCodecParams.h"
 #include "DialogUtil.h"
+#include "CWindow.h"
 #include "../util-QT/Util.h"
 #include "../DrmTransmitter.h"
 #include "../sourcedecoders/opus_codec.h"
@@ -117,15 +118,15 @@ OpusCodecParams::OpusCodecParams(CSettings& Settings, CParameter& Parameters,
 	Parameters.Unlock();
 
 	/* Connections */
-	connect(ButtonGroupChannels, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupChannels, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnButtonGroupChannels(int)));
-	connect(ButtonGroupBandwidth, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupBandwidth, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnButtonGroupBandwidth(int)));
-	connect(ButtonGroupFEC, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupFEC, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnButtonGroupFEC(int)));
-	connect(ButtonGroupSignal, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupSignal, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnButtonGroupSignal(int)));
-	connect(ButtonGroupApplication, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupApplication, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnButtonGroupApplication(int)));
 }
 

@@ -157,7 +157,7 @@ FDRMDialog::FDRMDialog(CTRx* pRx, CSettings& Settings, QWidget* parent)
     connect(actionBlueWhite, SIGNAL(triggered()), plotStyleMapper, SLOT(map()));
     connect(actionGreenBlack, SIGNAL(triggered()), plotStyleMapper, SLOT(map()));
     connect(actionBlackGrey, SIGNAL(triggered()), plotStyleMapper, SLOT(map()));
-    connect(plotStyleMapper, SIGNAL(mapped(int)), this, SIGNAL(plotStyleChanged(int)));
+    connect(plotStyleMapper, SIGNAL_SIGNALMAPPER_MAPPED_INT, this, SIGNAL(plotStyleChanged(int)));
     switch(getSetting("plotstyle", int(0), true))
     {
     case 0:
@@ -183,8 +183,8 @@ FDRMDialog::FDRMDialog(CTRx* pRx, CSettings& Settings, QWidget* parent)
     pButtonGroup->addButton(PushButtonService2, 1);
     pButtonGroup->addButton(PushButtonService3, 2);
     pButtonGroup->addButton(PushButtonService4, 3);
-    connect(pButtonGroup, SIGNAL(buttonClicked(int)), this, SLOT(OnSelectAudioService(int)));
-    connect(pButtonGroup, SIGNAL(buttonClicked(int)), this, SLOT(OnSelectDataService(int)));
+    connect(pButtonGroup, SIGNAL_BUTTONGROUP_CLICKED_INT, this, SLOT(OnSelectAudioService(int)));
+    connect(pButtonGroup, SIGNAL_BUTTONGROUP_CLICKED_INT, this, SLOT(OnSelectDataService(int)));
 
     connect(pFMDlg, SIGNAL(About()), this, SLOT(OnHelpAbout()));
     connect(pAnalogDemDlg, SIGNAL(About()), this, SLOT(OnHelpAbout()));
@@ -1334,9 +1334,9 @@ void FDRMDialog::SetDisplayColor(const QColor newColor)
         if (vecpWidgets[i] != TextTextMessage)
         {
             CurPal.setColor(QPalette::Active, QPalette::Text, newColor);
-            CurPal.setColor(QPalette::Active, QPalette::Foreground, newColor);
+            CurPal.setColor(QPalette::Active, QPalette::WindowText, newColor);
             CurPal.setColor(QPalette::Inactive, QPalette::Text, newColor);
-            CurPal.setColor(QPalette::Inactive, QPalette::Foreground, newColor);
+            CurPal.setColor(QPalette::Inactive, QPalette::WindowText, newColor);
         }
         CurPal.setColor(QPalette::Active, QPalette::Button, newColor);
         CurPal.setColor(QPalette::Active, QPalette::Light, newColor);

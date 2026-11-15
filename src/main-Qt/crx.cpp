@@ -515,7 +515,7 @@ void CRx::onSoundOutChannelChanged(EOutChanSel e)
 
 void  CRx::onSoundInSampleRateChanged(int n)
 {
-    rx.GetParameters()->SetNewSoundcardSigSampleRate(n);
+    rx.GetParameters()->SetNewSigSampleRate(n);
     Restart();
     emit inputSampleRateChanged(n);
 }

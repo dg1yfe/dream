@@ -32,9 +32,6 @@
 #include "util/Modul.h"
 #include "sound/soundinterface.h"
 #include "util/Utilities.h"
-#ifdef QT_MULTIMEDIA_LIB
-# include <QIODevice>
-#endif
 
 class CTransmitData : public CTransmitterModul<_COMPLEX, _COMPLEX>
 {

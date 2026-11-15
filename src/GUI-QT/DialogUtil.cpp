@@ -41,6 +41,7 @@
 #include "../Version.h"
 #include "../util-QT/Util.h"
 #include "DialogUtil.h"
+#include <QRegularExpression>
 #ifdef HAVE_LIBHAMLIB
 # include "../util-QT/Rig.h"
 #endif
@@ -313,7 +314,7 @@ CHelpUsage::CHelpUsage(const char* usage, const char* argv0, QWidget* parent)
     TextLabelAuthorNames->setText("");
     TextLabelCopyright->setText(tr("Command line usage:"));
     QString text(tr(usage));
-    text.replace(QRegExp("\\$EXECNAME"), QString::fromUtf8(argv0));
+    text.replace(QRegularExpression("\\$EXECNAME"), QString::fromUtf8(argv0));
     TextViewCredits->setFontFamily(FONT_COURIER);
     TextViewCredits->setPlainText(text);
     show();
@@ -416,7 +417,7 @@ void CSysTray::SetToolTip(CSysTray* pSysTray, const QString& Title, const QStrin
                 ToolTip += " |  ";
             ToolTip += Message;
         }
-        ToolTip.replace(QRegExp("(\r|\n|\v|\t|\b)"), " ");
+        ToolTip.replace(QRegularExpression("(\r|\n|\v|\t|\b)"), " ");
 #else
         if (!Title.isEmpty())
         {
@@ -437,7 +438,7 @@ void CSysTray::SetToolTip(CSysTray* pSysTray, const QString& Title, const QStrin
             NewMessage.replace('>', "&gt;");
             ToolTip += NewMessage;
         }
-        ToolTip.replace(QRegExp("(\r|\n|\v)"), "<br>");
+        ToolTip.replace(QRegularExpression("(\r|\n|\v)"), "<br>");
 #endif
         pSysTray->pSystemTrayIcon->setToolTip(ToolTip);
     }

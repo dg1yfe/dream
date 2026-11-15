@@ -152,11 +152,11 @@ AnalogDemDlg::AnalogDemDlg(CRx& nrx, CSettings& Settings,
 		this, SLOT(OnChartxAxisValSet(double)));
 
 	/* Button groups */
-	connect(ButtonGroupDemodulation, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupDemodulation, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnRadioDemodulation(int)));
-	connect(ButtonGroupAGC, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupAGC, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnRadioAGC(int)));
-	connect(ButtonGroupNoiseReduction, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupNoiseReduction, SIGNAL_BUTTONGROUP_CLICKED_INT,
 		this, SLOT(OnRadioNoiRed(int)));
 
 	/* Slider */

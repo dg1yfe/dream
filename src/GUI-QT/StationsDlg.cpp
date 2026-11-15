@@ -33,6 +33,7 @@
 #endif
 #include <QHideEvent>
 #include <QShowEvent>
+#include <QActionGroup>
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QApplication>
@@ -115,7 +116,7 @@ bReInitOnFrequencyChange(false)
 	connect(actionClose, SIGNAL(triggered()), SLOT(close()));
 	connect(actionShowAllStations, SIGNAL(triggered()), showMapper, SLOT(map()));
 	connect(actionShowOnlyActiveStations, SIGNAL(triggered()), showMapper, SLOT(map()));
-	connect(showMapper, SIGNAL(mapped(int)), this, SLOT(OnShowStationsMenu(int)));
+	connect(showMapper, SIGNAL_SIGNALMAPPER_MAPPED_INT, this, SLOT(OnShowStationsMenu(int)));
 	previewGroup->addAction(actionDisabled);
 	previewMapper->setMapping(actionDisabled, 0);
 	previewGroup->addAction(action5minutes);
@@ -128,7 +129,7 @@ bReInitOnFrequencyChange(false)
 	connect(action5minutes, SIGNAL(triggered()), previewMapper, SLOT(map()));
 	connect(action15minutes, SIGNAL(triggered()), previewMapper, SLOT(map()));
 	connect(action30minutes, SIGNAL(triggered()), previewMapper, SLOT(map()));
-	connect(previewMapper, SIGNAL(mapped(int)), this, SLOT(OnShowPreviewMenu(int)));
+	connect(previewMapper, SIGNAL_SIGNALMAPPER_MAPPED_INT, this, SLOT(OnShowPreviewMenu(int)));
 	connect(ListViewStations->header(), SIGNAL(sectionClicked(int)), this, SLOT(OnHeaderClicked(int)));
 
 	//connect(actionGetUpdate, SIGNAL(triggered()), this, SLOT(OnGetUpdate()));
@@ -178,8 +179,9 @@ void StationsDlg::OnShowPreviewMenu(int iID)
     UpdateTransmissionStatus();
 }
 
-void StationsDlg::on_ComboBoxFilterTarget_activated(const QString& s)
+void StationsDlg::on_ComboBoxFilterTarget_activated(int index)
 {
+	const QString s = ComboBoxFilterTarget->itemText(index);
 	if (schedule.GetSchedMode() == CSchedule::SM_DRM)
 		schedule.targetFilterdrm = s;
 	else
@@ -187,8 +189,9 @@ void StationsDlg::on_ComboBoxFilterTarget_activated(const QString& s)
     UpdateTransmissionStatus();
 }
 
-void StationsDlg::on_ComboBoxFilterCountry_activated(const QString& s)
+void StationsDlg::on_ComboBoxFilterCountry_activated(int index)
 {
+	const QString s = ComboBoxFilterCountry->itemText(index);
 	if (schedule.GetSchedMode() == CSchedule::SM_DRM)
 		schedule.countryFilterdrm = s;
 	else
@@ -196,8 +199,9 @@ void StationsDlg::on_ComboBoxFilterCountry_activated(const QString& s)
     UpdateTransmissionStatus();
 }
 
-void StationsDlg::on_ComboBoxFilterLanguage_activated(const QString& s)
+void StationsDlg::on_ComboBoxFilterLanguage_activated(int index)
 {
+	const QString s = ComboBoxFilterLanguage->itemText(index);
 	if (schedule.GetSchedMode() == CSchedule::SM_DRM)
 		schedule.languageFilterdrm = s;
 	else
@@ -329,7 +333,7 @@ void StationsDlg::OnTimer()
 	struct tm* gmtCur = gmtime(&ltime);
 
 	/* Generate time in format "UTC 12:00" */
-	QString strUTCTime = QString().sprintf("%02d:%02d UTC",
+	QString strUTCTime = QString::asprintf("%02d:%02d UTC",
 		gmtCur->tm_hour, gmtCur->tm_min);
 
 	/* Only apply if time label does not show the correct time */
@@ -485,7 +489,7 @@ void StationsDlg::LoadScheduleView()
 		else
 			strPower.setNum(rPower);
 
-		QString strTimes = QString().sprintf("%04d-%04d", station.StartTime(), station.StopTime());
+		QString strTimes = QString::asprintf("%04d-%04d", station.StartTime(), station.StopTime());
 
 		/* Generate new list station with all necessary column entries */
 		QTreeWidgetItem* item = new CaseInsensitiveTreeWidgetItem(ListViewStations);

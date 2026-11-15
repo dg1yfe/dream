@@ -144,7 +144,7 @@ CSoundFactoryIn::CSoundFactoryIn():CSoundFactory<CSoundInInterface>()
 #endif
 
 #ifdef USE_PORTAUDIO
-    drivers.push_back(new CSoundInPaIn());
+    drivers.push_back(new CPaIn());
 #endif
 
 #ifdef USE_OPENSL
@@ -177,7 +177,7 @@ CSoundFactoryOut::CSoundFactoryOut():CSoundFactory<CSoundOutInterface>()
 #endif
 
 #ifdef USE_PORTAUDIO
-  drivers.push_back(new CSoundOutPaOut());
+  drivers.push_back(new CPaOut());
 #endif
 
 #ifdef USE_OPENSL

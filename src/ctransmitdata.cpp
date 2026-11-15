@@ -124,21 +124,7 @@ void CTransmitData::FlushData()
     {
         /* Write data to sound card. Must be a blocking function */
 
-#ifdef QT_MULTIMEDIA_LIB
-        bool bBad = true;
-        if(pIODevice)
-        {
-            qint64 n = 2*vecsDataOut.Size();
-            qint64 m = pIODevice->write(reinterpret_cast<char*>(&vecsDataOut[0]), n);
-            if(m==n)
-                bBad = false;
-        }
-	if(bBad) {
-		cerr << "problem writing to sound card" << endl;
-	}
-#else
         if (pSound) pSound->Write(vecsDataOut);
-#endif
     }
     else
     {

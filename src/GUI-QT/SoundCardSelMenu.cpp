@@ -36,10 +36,6 @@
 #include "../util/FileTyper.h"
 #include "../main-Qt/crx.h"
 
-#ifdef QT_MULTIMEDIA_LIB
-# include <QAudioDeviceInfo>
-#endif
-
 #ifdef HAVE_LIBPCAP
 # define PCAP_FILES " *.pcap"
 #else
@@ -132,15 +128,10 @@ CSoundCardSelMenu::CSoundCardSelMenu(CTRx& ntrx,
 
         connect(menuInputChannel, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundInChannel(QAction*)));
         connect(menuOutputChannel, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundOutChannel(QAction*)));
-        connect(menuInputSampleRate, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundInputSampleRate(QAction*)));
-        menuOutputSampleRate = InitSampleRate(menuAudOutput, tr("Sample Rate"), AudioSampleRateTable);
-        connect(menuOutputSampleRate, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundOutputSampleRate(QAction*)));
-        actionUpscale = menuSigInput->addAction(tr("2:1 upscale"));
+        actionUpscale = menuInput->addAction(tr("2:1 upscale"));
         connect(actionUpscale, SIGNAL(toggled(bool)), this, SLOT(OnSoundSignalUpscale(bool)));
-        connect(this, SIGNAL(soundInDeviceChanged(QString)), &trx, SLOT(SetInputDevice(QString)));
         connect(this, SIGNAL(soundInSampleRateChanged(int)), &trx, SLOT(onSoundInSampleRateChanged(int)));
         connect(this, SIGNAL(soundOutSampleRateChanged(int)), &trx, SLOT(onSoundOutSampleRateChanged(int)));
-        connect(this, SIGNAL(soundInDeviceChanged(QString)), &trx, SLOT(SetInputDevice(QString)));
         connect(this, SIGNAL(soundInChannelChanged(int)), &trx, SLOT(onSoundInChannelChanged(int)));
         connect(this, SIGNAL(soundOutChannelChanged(EOutChanSel)), &trx, SLOT(onSoundOutChannelChanged(EOutChanSel)));
         connect(this, SIGNAL(soundSignalUpscaleChanged(int)), &trx, SLOT(SetSoundSignalUpscale(int)));
@@ -148,19 +139,14 @@ CSoundCardSelMenu::CSoundCardSelMenu(CTRx& ntrx,
         connect(reinterpret_cast<CRx*>(&trx), SIGNAL(InputChannelChanged(int)), this, SLOT(OnSoundInChannelChanged(int)));
         connect(reinterpret_cast<CRx*>(&trx), SIGNAL(OutputChannelChanged(int)), this, SLOT(OnSoundOutChannelChanged(int)));
 
-        connect(&trx, SIGNAL(InputDeviceChanged(QString)), this, SLOT(OnSoundInDeviceChanged(QString)));
-
         connect(&trx, SIGNAL(inputSampleRateChanged(int)), this, SLOT(OnSoundInSampleRateChanged(int)));
         connect(&trx, SIGNAL(outputSampleRateChanged(int)), this, SLOT(OnSoundOutSampleRateChanged(int)));
 
         connect(&trx, SIGNAL(soundUpscaleRatioChanged(int)), this, SLOT(OnSoundUpscaleRatioChanged(int)));
     }
 
-        QMenu* menuSignal = addMenu(tr("Signal Output"));
-        menuOutputDev = menuSignal->addMenu(tr("Device"));
-
-        connect(InitSampleRate(menuAudio, tr("Sample Rate"), AudioSampleRateTable), SIGNAL(triggered(QAction*)), this, SLOT(OnSoundInSampleRate(QAction*)));
-        connect(InitSampleRate(menuSignal, tr("Sample Rate"), SignalSampleRateTable), SIGNAL(triggered(QAction*)), this, SLOT(OnSoundOutSampleRate(QAction*)));
+    if (pFileMenu != nullptr) {
+        connect(pFileMenu, SIGNAL(soundFileChanged(QString)), this, SLOT(OnSoundFileChanged(QString)));
     }
 
     connect(menuInputDev, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundInDevice(QAction*)));
@@ -173,8 +159,8 @@ CSoundCardSelMenu::CSoundCardSelMenu(CTRx& ntrx,
     connect(&trx, SIGNAL(InputDeviceChanged(QString)), this, SLOT(OnSoundInDeviceChanged(QString)));
     connect(&trx, SIGNAL(OutputDeviceChanged(QString)), this, SLOT(OnSoundOutDeviceChanged(QString)));
 
-    connect(menuInputSampleRate, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundInSampleRate(QAction*)));
-    connect(menuOutputSampleRate, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundOutSampleRate(QAction*)));
+    connect(menuInputSampleRate, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundInputSampleRate(QAction*)));
+    connect(menuOutputSampleRate, SIGNAL(triggered(QAction*)), this, SLOT(OnSoundOutputSampleRate(QAction*)));
 }
 
 void CSoundCardSelMenu::OnSoundInDevice(QAction* action)
@@ -387,11 +373,20 @@ CFileMenu::CFileMenu(CTRx& ntrx, QMainWindow* parent,
     {
         QString openFile(tr("&Open File..."));
         QString closeFile(tr("&Close File"));
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+        actionOpenFile = addAction(openFile, QKeySequence(tr("Alt+O")), this, SLOT(OnOpenFile()));
+        actionCloseFile = addAction(closeFile, QKeySequence(tr("Alt+C")), this, SLOT(OnCloseFile()));
+#else
         actionOpenFile = addAction(openFile, this, SLOT(OnOpenFile()), QKeySequence(tr("Alt+O")));
         actionCloseFile = addAction(closeFile, this, SLOT(OnCloseFile()), QKeySequence(tr("Alt+C")));
+#endif
         addSeparator();
     }
+#if QT_VERSION >= QT_VERSION_CHECK(6, 3, 0)
+    addAction(tr("&Exit"), QKeySequence(tr("Alt+X")), parent, SLOT(close()));
+#else
     addAction(tr("&Exit"), parent, SLOT(close()), QKeySequence(tr("Alt+X")));
+#endif
     parent->menuBar()->insertMenu(menuInsertBefore->menuAction(), this);
 }
 

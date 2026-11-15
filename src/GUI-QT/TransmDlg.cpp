@@ -435,15 +435,15 @@ TransmDialog::TransmDialog(CTx& ntx, QWidget* parent)
         reinterpret_cast<QObject*>(this), SLOT(OnComboBoxMSCProtLevActivated(int)));
 
 	/* Button groups */
-	connect(ButtonGroupRobustnessMode, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupRobustnessMode, SIGNAL_BUTTONGROUP_CLICKED_INT,
         reinterpret_cast<QObject*>(this), SLOT(OnRadioRobustnessMode(int)));
-	connect(ButtonGroupBandwidth, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupBandwidth, SIGNAL_BUTTONGROUP_CLICKED_INT,
         reinterpret_cast<QObject*>(this), SLOT(OnRadioBandwidth(int)));
-	connect(ButtonGroupOutput, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupOutput, SIGNAL_BUTTONGROUP_CLICKED_INT,
         reinterpret_cast<QObject*>(this), SLOT(OnRadioOutput(int)));
-	connect(ButtonGroupCodec, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupCodec, SIGNAL_BUTTONGROUP_CLICKED_INT,
         reinterpret_cast<QObject*>(this), SLOT(OnRadioCodec(int)));
-	connect(ButtonGroupCurrentTime, SIGNAL(buttonClicked(int)),
+	connect(ButtonGroupCurrentTime, SIGNAL_BUTTONGROUP_CLICKED_INT,
         reinterpret_cast<QObject*>(this), SLOT(OnRadioCurrentTime(int)));
 
 	/* Line edits */

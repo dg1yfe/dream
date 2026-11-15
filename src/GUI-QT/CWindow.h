@@ -47,6 +47,15 @@
 
 #define EVENT_FILTER(e) do { if (!ef.isValid((QEvent*)e)) return; } while(0)
 
+/* Signals renamed in Qt 5.15 (the old overloads are gone in Qt 6) */
+#if QT_VERSION >= QT_VERSION_CHECK(5, 15, 0)
+# define SIGNAL_BUTTONGROUP_CLICKED_INT SIGNAL(idClicked(int))
+# define SIGNAL_SIGNALMAPPER_MAPPED_INT SIGNAL(mappedInt(int))
+#else
+# define SIGNAL_BUTTONGROUP_CLICKED_INT SIGNAL(buttonClicked(int))
+# define SIGNAL_SIGNALMAPPER_MAPPED_INT SIGNAL(mapped(int))
+#endif
+
 
 /* Classes ********************************************************************/
 

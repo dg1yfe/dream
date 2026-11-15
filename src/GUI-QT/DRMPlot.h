@@ -60,6 +60,7 @@
 #include <qwt_plot_picker.h>
 #include <qwt_scale_draw.h>
 #include <qwt_symbol.h>
+#include <qwt_text.h>
 #if QWT_VERSION >= 0x060000
 # include <qwt_picker_machine.h>
 #endif
@@ -156,6 +157,8 @@
 #else
 # define SETDATA setSamples
 #endif
+/* Typed empty data set (qwt >= 6.2 also has a float overload of setSamples) */
+#define NO_DATA static_cast<const double*>(nullptr), static_cast<const double*>(nullptr), 0
 #if QWT_VERSION < 0x060100
 # define SETMAJORPEN setMajPen
 # define SETMINORPEN setMinPen
@@ -396,7 +399,7 @@ protected:
 	int				iLastChanMode;
 
 public slots:
-#if QWT_VERSION < 0x060000
+#if defined(QWT_VERSION) && QWT_VERSION < 0x060000 /* moc may not see qwt_global.h */
 	void OnSelected(const QwtDoublePoint &pos);
 #else
 	void OnSelected(const QPointF &pos);

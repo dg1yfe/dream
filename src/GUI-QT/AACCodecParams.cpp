@@ -34,6 +34,7 @@
 #include <QLayout>
 #include "AACCodecParams.h"
 #include "DialogUtil.h"
+#include "CWindow.h"
 #include "../util-QT/Util.h"
 #include "../DrmTransmitter.h"
 #ifdef HAVE_LIBFDK_AAC
@@ -91,8 +92,8 @@ AACCodecParams::AACCodecParams(CSettings& Settings, CParameter& Parameters,
 	Parameters.Unlock();
 
 	/* Connections */
-    connect(ButtonGroupChannels, SIGNAL(buttonClicked(int)), this, SLOT(OnButtonGroupChannels(int)));
-    connect(ButtonGroupSampleRate, SIGNAL(buttonClicked(int)),		this, SLOT(OnButtonGroupSampleRate(int)));
+    connect(ButtonGroupChannels, SIGNAL_BUTTONGROUP_CLICKED_INT, this, SLOT(OnButtonGroupChannels(int)));
+    connect(ButtonGroupSampleRate, SIGNAL_BUTTONGROUP_CLICKED_INT,		this, SLOT(OnButtonGroupSampleRate(int)));
     connect(CheckBoxSBR, SIGNAL(toggled(bool)),		this, SLOT(OnCheckBoxSBR(bool)));
 
     ButtonGroupChannels->addButton(RadioButtonChannelsMono, CAudioParam::AM_MONO);

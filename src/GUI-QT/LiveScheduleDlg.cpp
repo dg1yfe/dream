@@ -33,6 +33,7 @@
 #include <QDateTime>
 #include <QHideEvent>
 #include <QShowEvent>
+#include <QActionGroup>
 #include "../util-QT/Util.h"
 
 /* Implementation *************************************************************/
@@ -70,7 +71,7 @@ LiveScheduleDlg::ExtractTime(const CAltFreqSched& schedule)
         {
             /* Add information about days duration */
             if (iDays > 1)
-                sDays.sprintf(" (%d days)", iDays);
+                sDays = QString::asprintf(" (%d days)", iDays);
             iStopHours = iStopHours % 24;
         }
     }
@@ -79,7 +80,7 @@ LiveScheduleDlg::ExtractTime(const CAltFreqSched& schedule)
         sResult = "24 hours, 7 days a week";
     else
     {
-        sResult.sprintf("%02d:%02d-%02d:%02d", iStartHours, iStartMinutes, iStopHours, iStopMinutes);
+        sResult = QString::asprintf("%02d:%02d-%02d:%02d", iStartHours, iStartMinutes, iStopHours, iStopMinutes);
         sResult += sDays;
     }
 
@@ -360,7 +361,7 @@ LiveScheduleDlg::LiveScheduleDlg(CRx& nrx, CSettings& Settings,
     connect(actionClose, SIGNAL(triggered()), SLOT(close()));
     connect(actionShowAllStations, SIGNAL(triggered()), showMapper, SLOT(map()));
     connect(actionShowOnlyActiveStations, SIGNAL(triggered()), showMapper, SLOT(map()));
-    connect(showMapper, SIGNAL(mapped(int)), this, SLOT(OnShowStationsMenu(int)));
+    connect(showMapper, SIGNAL_SIGNALMAPPER_MAPPED_INT, this, SLOT(OnShowStationsMenu(int)));
     previewGroup->addAction(actionDisabled);
     previewMapper->setMapping(actionDisabled, 0);
     previewGroup->addAction(action5minutes);
@@ -373,7 +374,7 @@ LiveScheduleDlg::LiveScheduleDlg(CRx& nrx, CSettings& Settings,
     connect(action5minutes, SIGNAL(triggered()), previewMapper, SLOT(map()));
     connect(action15minutes, SIGNAL(triggered()), previewMapper, SLOT(map()));
     connect(action30minutes, SIGNAL(triggered()), previewMapper, SLOT(map()));
-    connect(previewMapper, SIGNAL(mapped(int)), this, SLOT(OnShowPreviewMenu(int)));
+    connect(previewMapper, SIGNAL_SIGNALMAPPER_MAPPED_INT, this, SLOT(OnShowPreviewMenu(int)));
 
     connect(buttonOk,  SIGNAL(clicked()), this, SLOT(close()));
     //connect(actionGetUpdate, SIGNAL(triggered()), this, SLOT(OnGetUpdate()));
@@ -482,7 +483,7 @@ LiveScheduleDlg::OnTimerUTCLabel()
     struct tm *gmtCur = gmtime(&ltime);
 
     /* Generate time in format "UTC 12:00" */
-    QString strUTCTime = QString().sprintf("%02d:%02d UTC",
+    QString strUTCTime = QString::asprintf("%02d:%02d UTC",
                                            gmtCur->tm_hour, gmtCur->tm_min);
 
     /* Only apply if time label does not show the correct time */
