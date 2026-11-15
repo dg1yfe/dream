@@ -68,20 +68,25 @@ if(CMAKE_OSX_ARCHITECTURES)
 else()
     set(_dream_arch "${CMAKE_SYSTEM_PROCESSOR}")
 endif()
-if(IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}")
-    # Locally built deps (e.g. fdk-aac from macx/build.sh)
-    list(PREPEND CMAKE_PREFIX_PATH "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}")
+# Locally built codec libs: macOS .deps/<arch> (macx/build.sh), Linux
+# .deps/linux-<arch> (linux/build-deps.sh; separate so a shared checkout can
+# hold both)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(DREAM_DEPS_PREFIX "${CMAKE_SOURCE_DIR}/.deps/linux-${_dream_arch}" CACHE PATH "Locally built codec libs")
+else()
+    set(DREAM_DEPS_PREFIX "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}" CACHE PATH "Locally built codec libs")
+endif()
+if(IS_DIRECTORY "${DREAM_DEPS_PREFIX}")
+    list(PREPEND CMAKE_PREFIX_PATH "${DREAM_DEPS_PREFIX}")
 endif()
 
 # Directories searched at runtime: also used by dlopen() of leaf names
 # (libfaad_drm / libfaac_drm / libopus) because dyld consults LC_RPATH for them.
 set(DREAM_EXTRA_RPATHS "")
 set(DREAM_DEPS_LIBDIR "")
-if(IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}/lib")
-    set(DREAM_DEPS_LIBDIR "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}/lib")
-    if(APPLE)
-        list(APPEND DREAM_EXTRA_RPATHS "${DREAM_DEPS_LIBDIR}")
-    endif()
+if(IS_DIRECTORY "${DREAM_DEPS_PREFIX}/lib")
+    set(DREAM_DEPS_LIBDIR "${DREAM_DEPS_PREFIX}/lib")
+    list(APPEND DREAM_EXTRA_RPATHS "${DREAM_DEPS_LIBDIR}")
 endif()
 
 if(APPLE)
@@ -288,6 +293,11 @@ function(dream_setup_common target)
             "-framework CoreAudio" "-framework AudioToolbox" "-framework AudioUnit")
         set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH ${DREAM_EXTRA_RPATHS})
         set_property(TARGET ${target} APPEND PROPERTY INSTALL_RPATH ${DREAM_EXTRA_RPATHS})
+    elseif(UNIX)
+        # build tree: find the .deps codec libs; installed tree (tarball, .deb):
+        # bin/../lib/dream holds the codec .so files (and a bundled libqwt)
+        set_property(TARGET ${target} APPEND PROPERTY BUILD_RPATH ${DREAM_EXTRA_RPATHS})
+        set_property(TARGET ${target} PROPERTY INSTALL_RPATH "\$ORIGIN/../lib/dream")
     endif()
 
     dream_configure_backends(${target})
@@ -406,6 +416,29 @@ if(NOT DREAM_CONSOLE_ONLY)
             install(FILES "${CMAKE_SOURCE_DIR}/linux/dream.1" DESTINATION share/man/man1)
         endif()
     endif()
+endif()
+
+# ---------------------------------------------------------------------------
+# Linux install: runtime-loaded codec libs + licence texts
+# ---------------------------------------------------------------------------
+if(UNIX AND NOT APPLE)
+    option(DREAM_INSTALL_CODEC_LIBS "Install the .deps codec .so files (faad_drm, faac_drm, xaacenc_drm) to lib/dream" ON)
+    if(DREAM_INSTALL_CODEC_LIBS AND DREAM_DEPS_LIBDIR)
+        # never libfdk-aac (licence): it is not built for Linux, and excluded here anyway
+        # the names DREAM dlopen()s (= SONAMEs); the unversioned dev symlinks are not needed
+        foreach(_l libfaad_drm.so.2 libfaac_drm.so.0 libxaacenc_drm.so)
+            if(EXISTS "${DREAM_DEPS_LIBDIR}/${_l}")
+                install(FILES "${DREAM_DEPS_LIBDIR}/${_l}" DESTINATION lib/dream)
+            endif()
+        endforeach()
+        foreach(_d faad2 faac libxaac)
+            if(IS_DIRECTORY "${DREAM_DEPS_PREFIX}/share/doc/${_d}")
+                install(DIRECTORY "${DREAM_DEPS_PREFIX}/share/doc/${_d}" DESTINATION share/doc/dream/licenses)
+            endif()
+        endforeach()
+    endif()
+    install(DIRECTORY "${CMAKE_SOURCE_DIR}/doc/licenses/" DESTINATION share/doc/dream/licenses)
+    install(FILES "${CMAKE_SOURCE_DIR}/COPYING" DESTINATION share/doc/dream)
 endif()
 
 # ---------------------------------------------------------------------------
