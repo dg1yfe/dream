@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 16:22:48 +0100
+Subject: [PATCH] Finish initialisation after the "bit reservoir too small"
+ warning
+
+ixheaace_init() returned IA_EXHEAACE_CONFIG_NONFATAL_BITRES_SIZE_TOO_SMALL before
+setting input_size, so a caller that treats the warning as non-fatal (as the code
+says it is) read 0 bytes per frame and looped forever ("hang with a small bit
+reservoir"). The warning is now returned at the end of a complete initialisation.
+---
+ encoder/ixheaace_api.c | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/encoder/ixheaace_api.c b/encoder/ixheaace_api.c
+index cac13f5..8b5ac54 100644
+--- a/encoder/ixheaace_api.c
++++ b/encoder/ixheaace_api.c
+@@ -3778,7 +3778,9 @@ IA_ERRORCODE ixheaace_init(pVOID pstr_obj_ixheaace, pVOID pv_input, pVOID pv_out
+       }
+ 
+       if (pstr_api_struct->config[0].aac_config.bitreservoir_size < avg_bytes_per_frame_per_ch) {
+-        return IA_EXHEAACE_CONFIG_NONFATAL_BITRES_SIZE_TOO_SMALL;
++        /* non-fatal: finish the initialisation (returning here left input_size at 0, so
++           callers that keep going read no input and loop forever) */
++        error = IA_EXHEAACE_CONFIG_NONFATAL_BITRES_SIZE_TOO_SMALL;
+       }
+     }
+     if (pstr_input_config->i_use_es) {

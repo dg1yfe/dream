@@ -13,12 +13,15 @@
 #   LOOPBACK_WORKDIR      keep all files there (default: fresh temp dir)
 #   LOOPBACK_CASES        regex selecting cases by name (default: all)
 #   DREAM_NO_FDK=1        run without fdk-aac (or DREAM_NO_FDK_ENCODER=1 globally):
-#                         the fdk-* cases are then SKIPPED
-#                         (they would silently be encoded by faac instead)
+#                         the fdk-* cases are then SKIPPED (they would silently be
+#                         encoded by libxaac or faac instead); the xaac-* cases are
+#                         then decoded by the patched faad2
+#   DREAM_NO_XAAC=1       run without libxaac: the xaac-* cases are SKIPPED
 #
 # Codec provenance is checked from the logs, so a silent fallback cannot pass:
 #   fdk-*   tx.log must say "FDK library loaded: ... (DRM encoder: yes)", else FAIL
 #           (SKIP when DREAM_NO_FDK=1 is set on purpose)
+#   xaac-*  tx.log must say "xaac: DRM encoder opened", else FAIL
 #   faac-*  tx.log must say "Got FAAC library", else FAIL
 # The decoder actually used (fdk / patched faad2 / stock faad2) is shown per case.
 #
@@ -106,14 +109,24 @@ fdk-aac-lc-12k     |                       | --codec AAC --aacmode mono --aacrat
 fdk-aac-sbr        |                       | --codec AAC --aacmode mono --sbr 1        | mono
 fdk-aac-sbr-stereo |                       | --codec AAC --aacmode stereo --sbr 1      | stereo
 fdk-aac-sbr-ps     |                       | --codec AAC --aacmode pstereo --sbr 1     | stereo
-faac-aac-lc-mono   | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono                | mono
-faac-aac-lc-stereo | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode stereo              | stereo
+xaac-aac-lc-mono   | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono                | mono
+xaac-aac-lc-stereo | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode stereo              | stereo
+xaac-aac-lc-12k    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono --aacrate 12000 | mono
+xaac-aac-sbr       | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono --sbr 1        | mono
+xaac-aac-sbr-stereo | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode stereo --sbr 1     | stereo
+xaac-aac-sbr-ps    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode pstereo --sbr 1     | stereo
+xaac-sbr-12k       | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono --sbr 1 --aacrate 12000 | mono
+xaac-sbr-ps-12k    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode pstereo --sbr 1 --aacrate 12000 | stereo
+faac-aac-lc-mono   | DREAM_NO_FDK_ENCODER=1 DREAM_NO_XAAC=1 | --codec AAC --aacmode mono   | mono
+faac-aac-lc-stereo | DREAM_NO_FDK_ENCODER=1 DREAM_NO_XAAC=1 | --codec AAC --aacmode stereo | stereo
 opus-mono          |                       | --codec Opus --opuschannels OC_MONO       | mono
 opus-stereo        |                       | --codec Opus --opuschannels OC_STEREO     | stereo
 '
 
 nofdk=0
 case "${DREAM_NO_FDK:-0}${DREAM_NO_FDK_ENCODER:-0}" in 00|0|'') ;; *) nofdk=1 ;; esac
+noxaac=0
+case "${DREAM_NO_XAAC:-0}" in 0|'') ;; *) noxaac=1 ;; esac
 
 # which AAC decoder the receiver could use, from rx.log
 decoder_of() {
@@ -137,6 +150,11 @@ for src in $SOURCES; do
             echo "$line"; RESULTS="$RESULTS$line"$'\n'; skip=$((skip + 1))
             continue
         fi
+        if [ $noxaac = 1 ] && [ "${name#xaac-}" != "$name" ]; then
+            line=$(printf '%-7s %-19s %s' "$label" "$name" "SKIP *** libxaac disabled (DREAM_NO_XAAC) - not tested ***")
+            echo "$line"; RESULTS="$RESULTS$line"$'\n'; skip=$((skip + 1))
+            continue
+        fi
         dir="$WORK/$label/$name"; mkdir -p "$dir"
         (
             cd "$dir" || exit 1
@@ -151,6 +169,8 @@ for src in $SOURCES; do
         case "$name" in
             fdk-*) grep -q "FDK library loaded:.*(DRM encoder: yes)" "$dir/tx.log" ||
                        prov="fdk-aac DRM encoder NOT loaded (tx.log) - faac fallback would have encoded this" ;;
+            xaac-*) grep -q "xaac: DRM encoder opened" "$dir/tx.log" ||
+                       prov="libxaac DRM encoder NOT used (tx.log)" ;;
             faac-*) grep -q "Got FAAC library" "$dir/tx.log" ||
                        prov="libfaac_drm NOT loaded (tx.log)" ;;
         esac
@@ -168,5 +188,5 @@ done
 
 echo
 echo "summary: $pass passed, $fail failed, $skip skipped (files in $WORK)"
-[ "$skip" -gt 0 ] && echo "*** $skip fdk-aac case(s) SKIPPED because DREAM_NO_FDK / DREAM_NO_FDK_ENCODER is set ***"
+[ "$skip" -gt 0 ] && echo "*** $skip case(s) SKIPPED (DREAM_NO_FDK / DREAM_NO_FDK_ENCODER / DREAM_NO_XAAC set) ***"
 [ "$fail" -eq 0 ]

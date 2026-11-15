@@ -1,0 +1,80 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 14:35:01 +0100
+Subject: [PATCH] HE-AAC v1/v2 with a 12 kHz core (24 kHz output)
+
+SBR/PS were silently replaced by AAC-LC for inputs below 32 kHz (ixheaace_api.c), and a
+missing break in ixheaace_is_sbr_setting_available() made mono need >= 32 kHz too. Inputs
+from 16 kHz up are now accepted and the tuning table decides; combinations without a tuning
+entry fail init instead of encoding AAC-LC. Adds stereo tuning rows for the 12 kHz core
+(needed for stereo SBR and, via the availability check, for PS): start/stop band from the
+12 kHz mono row at the per-channel bitrate (16-24 kbit/s: {7,11}; >= 24 kbit/s: {11,12}),
+noise and stereo parameters as in the 16 kHz-core stereo rows.
+---
+ encoder/ixheaace_api.c      |  6 +++++-
+ encoder/ixheaace_sbr_main.c | 10 ++++++----
+ encoder/ixheaace_sbr_rom.c  | 10 +++++++++-
+ 3 files changed, 20 insertions(+), 6 deletions(-)
+
+diff --git a/encoder/ixheaace_api.c b/encoder/ixheaace_api.c
+index 6d5c47e..bca0a88 100644
+--- a/encoder/ixheaace_api.c
++++ b/encoder/ixheaace_api.c
+@@ -901,7 +901,11 @@ static IA_ERRORCODE ixheaace_set_config_params(ixheaace_api_struct *pstr_api_str
+         (AOT_AAC_ELD == pstr_input_config->aot)) {
+       pstr_api_struct->config[ele_idx].aac_classic = 0;
+     }
+-    if (pstr_api_struct->config[ele_idx].sample_rate < 32000) {
++    /* HE-AAC (AOT 5/29) needs a dual-rate SBR tuning entry for core rate = input rate / 2.
++       Entries exist from an 8 kHz core up, e.g. DRM's 24 kHz output with a 12 kHz core, so only
++       inputs below 16 kHz fall back to AAC-LC here; unsupported combinations are rejected by
++       ixheaace_is_sbr_setting_available() during init instead of silently encoding AAC-LC. */
++    if (pstr_api_struct->config[ele_idx].sample_rate < 16000) {
+       if (pstr_api_struct->config[ele_idx].aac_classic == 0) {
+         pstr_api_struct->config[ele_idx].aac_classic = 1;
+       }
+diff --git a/encoder/ixheaace_sbr_main.c b/encoder/ixheaace_sbr_main.c
+index c2c95ca..2b5d4bb 100644
+--- a/encoder/ixheaace_sbr_main.c
++++ b/encoder/ixheaace_sbr_main.c
+@@ -395,13 +395,15 @@ ixheaace_is_sbr_setting_available(UWORD32 bitrate, UWORD32 num_output_channels,
+ 
+   switch (num_output_channels) {
+     case MONO:
+-      if (sample_rate_input < 16000 || sample_rate_input > 48000) {
+-        return 0;
+-      }
+     case STEREO:
+-      if (sample_rate_input < 32000 || sample_rate_input > 48000) {
++      /* availability below 32 kHz is decided by the tuning table (stereo rows exist for 12 and
++         16 kHz cores); the missing break made mono require >= 32 kHz as well */
++      if (sample_rate_input < 16000 || sample_rate_input > 48000) {
+         return 0;
+       }
++      break;
++    default:
++      break;
+   }
+ 
+   *ptr_core_sr = sample_rate_input / 2;
+diff --git a/encoder/ixheaace_sbr_rom.c b/encoder/ixheaace_sbr_rom.c
+index 90e94c5..00c7b82 100644
+--- a/encoder/ixheaace_sbr_rom.c
++++ b/encoder/ixheaace_sbr_rom.c
+@@ -637,7 +637,15 @@ const ixheaace_str_qmf_tabs ixheaace_qmf_tab = {
+        {10000, 12000, {7, 11}, 3, {1, 0, 6}, IXHEAACE_SBR_MODE_MONO},
+        {12000, 72001, {11, 12}, 3, {1, 0, 6}, IXHEAACE_SBR_MODE_MONO},
+        {0}},
+-      {{0}}},
++      /* 12 kHz core, stereo (24 kHz output, e.g. DRM). Derived: the per-channel bitrate B/2
++         selects the start/stop band of the 12 kHz mono rows above (the 8-10 kbit/s mono row
++         {4, 6} yields no decodable HF, so 16-20 kbit/s also uses {7, 11}); noise and stereo
++         parameters follow the 16 kHz-core stereo rows (1 noise band and -3 dB max level, 2 noise
++         bands from 28 kbit/s, SWITCH_LRC). */
++      {{16000, 24000, {7, 11}, 3, {1, 0, -3}, IXHEAACE_SBR_MODE_SWITCH_LRC},
++       {24000, 28000, {11, 12}, 3, {1, 0, -3}, IXHEAACE_SBR_MODE_SWITCH_LRC},
++       {28000, 144001, {11, 12}, 3, {2, 0, -3}, IXHEAACE_SBR_MODE_SWITCH_LRC},
++       {0}}},
+ 
+      {{{8000, 10000, {1, 0}, 3, {1, 0, 6}, IXHEAACE_SBR_MODE_MONO},
+        {10000, 12000, {2, 6}, 3, {1, 0, 6}, IXHEAACE_SBR_MODE_MONO},

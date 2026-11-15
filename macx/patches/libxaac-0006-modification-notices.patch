@@ -1,0 +1,256 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 14:35:01 +0100
+Subject: [PATCH] Mark modified files (Apache-2.0 section 4(b))
+
+Adds a one-line modification notice below the original copyright header of every file changed by the DREAM patches.
+---
+ encoder/ixheaace_api.c                 | 1 +
+ encoder/ixheaace_fft.c                 | 1 +
+ encoder/ixheaace_hybrid.c              | 1 +
+ encoder/ixheaace_hybrid_init.c         | 1 +
+ encoder/ixheaace_ps_enc.c              | 1 +
+ encoder/ixheaace_ps_enc_init.c         | 1 +
+ encoder/ixheaace_rom.c                 | 1 +
+ encoder/ixheaace_sbr_env_est.c         | 1 +
+ encoder/ixheaace_sbr_env_est_init.c    | 1 +
+ encoder/ixheaace_sbr_frame_info_gen.c  | 1 +
+ encoder/ixheaace_sbr_frame_info_gen.h  | 1 +
+ encoder/ixheaace_sbr_hybrid.h          | 1 +
+ encoder/ixheaace_sbr_main.c            | 1 +
+ encoder/ixheaace_sbr_ps_enc.h          | 1 +
+ encoder/ixheaace_sbr_qmf_enc.c         | 1 +
+ encoder/ixheaace_sbr_qmf_enc.h         | 1 +
+ encoder/ixheaace_sbr_rom.c             | 1 +
+ encoder/ixheaace_sbr_tran_det.c        | 1 +
+ encoder/ixheaace_sbr_write_bitstream.c | 1 +
+ 19 files changed, 19 insertions(+)
+
+diff --git a/encoder/ixheaace_api.c b/encoder/ixheaace_api.c
+index bca0a88..cac13f5 100644
+--- a/encoder/ixheaace_api.c
++++ b/encoder/ixheaace_api.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <stdlib.h>
+diff --git a/encoder/ixheaace_fft.c b/encoder/ixheaace_fft.c
+index 68c573d..0493fb7 100644
+--- a/encoder/ixheaace_fft.c
++++ b/encoder/ixheaace_fft.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_hybrid.c b/encoder/ixheaace_hybrid.c
+index 089729a..b46b87d 100644
+--- a/encoder/ixheaace_hybrid.c
++++ b/encoder/ixheaace_hybrid.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_hybrid_init.c b/encoder/ixheaace_hybrid_init.c
+index 3aac05b..a6dba46 100644
+--- a/encoder/ixheaace_hybrid_init.c
++++ b/encoder/ixheaace_hybrid_init.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_ps_enc.c b/encoder/ixheaace_ps_enc.c
+index 8bd1f89..b0e0b32 100644
+--- a/encoder/ixheaace_ps_enc.c
++++ b/encoder/ixheaace_ps_enc.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_ps_enc_init.c b/encoder/ixheaace_ps_enc_init.c
+index bbf89d7..d1e782e 100644
+--- a/encoder/ixheaace_ps_enc_init.c
++++ b/encoder/ixheaace_ps_enc_init.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_rom.c b/encoder/ixheaace_rom.c
+index 31d8e44..97c7b28 100644
+--- a/encoder/ixheaace_rom.c
++++ b/encoder/ixheaace_rom.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include "ixheaac_type_def.h"
+diff --git a/encoder/ixheaace_sbr_env_est.c b/encoder/ixheaace_sbr_env_est.c
+index 218afda..7a73ea8 100644
+--- a/encoder/ixheaace_sbr_env_est.c
++++ b/encoder/ixheaace_sbr_env_est.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_sbr_env_est_init.c b/encoder/ixheaace_sbr_env_est_init.c
+index fbbe02e..b00fd43 100644
+--- a/encoder/ixheaace_sbr_env_est_init.c
++++ b/encoder/ixheaace_sbr_env_est_init.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_sbr_frame_info_gen.c b/encoder/ixheaace_sbr_frame_info_gen.c
+index b4df45c..e3f8575 100644
+--- a/encoder/ixheaace_sbr_frame_info_gen.c
++++ b/encoder/ixheaace_sbr_frame_info_gen.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_sbr_frame_info_gen.h b/encoder/ixheaace_sbr_frame_info_gen.h
+index 766f671..91faad1 100644
+--- a/encoder/ixheaace_sbr_frame_info_gen.h
++++ b/encoder/ixheaace_sbr_frame_info_gen.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+diff --git a/encoder/ixheaace_sbr_hybrid.h b/encoder/ixheaace_sbr_hybrid.h
+index b2ead4e..0fd6bbd 100644
+--- a/encoder/ixheaace_sbr_hybrid.h
++++ b/encoder/ixheaace_sbr_hybrid.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+diff --git a/encoder/ixheaace_sbr_main.c b/encoder/ixheaace_sbr_main.c
+index 2b5d4bb..72c4a8d 100644
+--- a/encoder/ixheaace_sbr_main.c
++++ b/encoder/ixheaace_sbr_main.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_sbr_ps_enc.h b/encoder/ixheaace_sbr_ps_enc.h
+index fd662e2..88cb68a 100644
+--- a/encoder/ixheaace_sbr_ps_enc.h
++++ b/encoder/ixheaace_sbr_ps_enc.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+diff --git a/encoder/ixheaace_sbr_qmf_enc.c b/encoder/ixheaace_sbr_qmf_enc.c
+index 2390bb8..1e0e758 100644
+--- a/encoder/ixheaace_sbr_qmf_enc.c
++++ b/encoder/ixheaace_sbr_qmf_enc.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+diff --git a/encoder/ixheaace_sbr_qmf_enc.h b/encoder/ixheaace_sbr_qmf_enc.h
+index 63e8f71..273a935 100644
+--- a/encoder/ixheaace_sbr_qmf_enc.h
++++ b/encoder/ixheaace_sbr_qmf_enc.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+diff --git a/encoder/ixheaace_sbr_rom.c b/encoder/ixheaace_sbr_rom.c
+index 00c7b82..c3e37ba 100644
+--- a/encoder/ixheaace_sbr_rom.c
++++ b/encoder/ixheaace_sbr_rom.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include "ixheaac_type_def.h"
+diff --git a/encoder/ixheaace_sbr_tran_det.c b/encoder/ixheaace_sbr_tran_det.c
+index 8893ae0..ab25fbe 100644
+--- a/encoder/ixheaace_sbr_tran_det.c
++++ b/encoder/ixheaace_sbr_tran_det.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <math.h>
+diff --git a/encoder/ixheaace_sbr_write_bitstream.c b/encoder/ixheaace_sbr_write_bitstream.c
+index 5d2d392..6e06b17 100644
+--- a/encoder/ixheaace_sbr_write_bitstream.c
++++ b/encoder/ixheaace_sbr_write_bitstream.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <math.h>

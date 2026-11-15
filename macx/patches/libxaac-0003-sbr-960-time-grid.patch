@@ -1,0 +1,376 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 14:35:01 +0100
+Subject: [PATCH] SBR 960: 15-slot time grid, transient detector and envelope
+ buffers
+
+HE-AAC with frameLengthFlag=1 has numTimeSlots = 15 (30 QMF slots of RATE 2,
+ISO/IEC 14496-3 4.6.18). The envelope extractor, transient detector, frame splitter,
+missing-harmonics detector and the time grid generator assumed 16 slots: energies of a
+960 frame were written into a 16-row half buffer (one stale row), and grids were built and
+written with "- 16" (bs_var_bord_1 = absBordTrail - numTimeSlots), so FIXVAR/VARFIX/VARVAR
+borders were shifted against the decoder's grid. All of these now use the frame's
+numTimeSlots. The fmax segment lengths of the grid generator are tuned for 16 slots and can
+put the common border at 19 > numTimeSlots + 3 with 15 slots (invalid 2-bit field); the
+post-transient fill is now redone with the next smaller even segment length in that case
+(0 invalid grids in 25k test frames, was ~10%). The SBR header period uses the 1920-sample
+SBR frame. 1024 framing is bit-exact with the unpatched encoder.
+---
+ encoder/ixheaace_sbr_env_est_init.c    | 24 ++++++-
+ encoder/ixheaace_sbr_frame_info_gen.c  | 98 ++++++++++++++++++--------
+ encoder/ixheaace_sbr_frame_info_gen.h  |  1 +
+ encoder/ixheaace_sbr_main.c            | 14 +++-
+ encoder/ixheaace_sbr_tran_det.c        |  7 ++
+ encoder/ixheaace_sbr_write_bitstream.c |  7 +-
+ 6 files changed, 113 insertions(+), 38 deletions(-)
+
+diff --git a/encoder/ixheaace_sbr_env_est_init.c b/encoder/ixheaace_sbr_env_est_init.c
+index 2f2d8d1..fbbe02e 100644
+--- a/encoder/ixheaace_sbr_env_est_init.c
++++ b/encoder/ixheaace_sbr_env_est_init.c
+@@ -72,6 +72,9 @@ ixheaace_create_extract_sbr_envelope(WORD32 ch,
+   WORD32 time_slots = 16;
+   WORD32 sbr_ratio_idx = pstr_sbr_ext_env->sbr_ratio_idx;
+   WORD32 qmf_time_slots = IXHEAACE_QMF_TIME_SLOTS;
++  /* rows of the QMF r/i buffers that get pointers, and the per-channel stride (the PS downmix
++     relies on the 32-slot layout, so 960 keeps it and only uses 30 rows) */
++  WORD32 r_rows, r_stride = IXHEAACE_QMF_TIME_SLOTS;
+   FLOAT32 *ptr_buffer = NULL;
+   FLOAT32 *ptr_i_buffer = NULL;
+   memset(pstr_sbr_ext_env, 0, sizeof(ixheaace_str_sbr_extr_env));
+@@ -101,6 +104,14 @@ ixheaace_create_extract_sbr_envelope(WORD32 ch,
+       y_buffer_write_offset = QMF_TIME_SLOTS_USAC_4_1;
+       no_cols = qmf_time_slots;
+     }
++    if ((sbr_codec == HEAAC_SBR) && frame_flag_480) {
++      /* HE-AAC with 960-sample core frames (frameLengthFlag=1, e.g. DRM): ISO/IEC 14496-3
++         4.6.18.2: numTimeSlots = 15 SBR slots of RATE=2 QMF slots = 30 QMF slots per frame */
++      qmf_time_slots = 30;
++      y_buffer_write_offset = 30;
++      no_cols = 30;
++      time_slots = 15;
++    }
+ 
+     pstr_sbr_ext_env->y_buffer_write_offset = y_buffer_write_offset;
+ 
+@@ -152,9 +163,16 @@ ixheaace_create_extract_sbr_envelope(WORD32 ch,
+            IXHEAACE_QMF_CHANNELS * sizeof(pstr_sbr_ext_env->ptr_y_buffer[0]));
+   }
+ 
+-  ptr_buffer = &ptr_sbr_env_r_buf[ch * qmf_time_slots * IXHEAACE_QMF_CHANNELS];
+-  ptr_i_buffer = &ptr_sbr_env_i_buf[ch * qmf_time_slots * IXHEAACE_QMF_CHANNELS];
+-  for (i = 0; i < r_buffer_length; i++) {
++  r_rows = r_buffer_length;
++  if (qmf_time_slots > IXHEAACE_QMF_TIME_SLOTS) {
++    r_stride = qmf_time_slots;
++  }
++  if ((sbr_codec == HEAAC_SBR) && (r_rows < IXHEAACE_QMF_TIME_SLOTS)) {
++    r_rows = IXHEAACE_QMF_TIME_SLOTS;
++  }
++  ptr_buffer = &ptr_sbr_env_r_buf[ch * r_stride * IXHEAACE_QMF_CHANNELS];
++  ptr_i_buffer = &ptr_sbr_env_i_buf[ch * r_stride * IXHEAACE_QMF_CHANNELS];
++  for (i = 0; i < r_rows; i++) {
+     pstr_sbr_ext_env->ptr_r_buffer[i] = ptr_buffer + i * IXHEAACE_QMF_CHANNELS;
+     memset(pstr_sbr_ext_env->ptr_r_buffer[i], 0,
+            IXHEAACE_QMF_CHANNELS * sizeof(pstr_sbr_ext_env->ptr_r_buffer[0]));
+diff --git a/encoder/ixheaace_sbr_frame_info_gen.c b/encoder/ixheaace_sbr_frame_info_gen.c
+index 2460728..b4df45c 100644
+--- a/encoder/ixheaace_sbr_frame_info_gen.c
++++ b/encoder/ixheaace_sbr_frame_info_gen.c
+@@ -150,10 +150,11 @@ static VOID ixheaace_fill_frame_pre(WORD32 dmax, WORD32 *ptr_v_bord, WORD32 *ptr
+ static VOID ixheaace_fill_Frame_Post(WORD32 *ptr_parts, WORD32 *ptr_d, WORD32 dmax,
+                                      WORD32 *ptr_v_bord, WORD32 *ptr_length_v_bord,
+                                      ixheaace_freq_res *ptr_v_freq, WORD32 *ptr_length_v_freq,
+-                                     WORD32 bmax, WORD32 fmax) {
++                                     WORD32 bmax, WORD32 fmax, WORD32 num_time_slots) {
+   WORD32 j, rest, segm, S, s = 0, bord;
+ 
+-  rest = 32 - bmax;
++  /* fill up to the end of the look-ahead frame: 2 * numTimeSlots (32, or 30 for 960) */
++  rest = 2 * num_time_slots - bmax;
+ 
+   *ptr_d = rest;
+ 
+@@ -353,13 +354,13 @@ static VOID ixheaace_special_case(WORD32 *ptr_spread_flag, WORD32 allow_spread,
+ 
+ static VOID ixheaace_calc_cmon_border(WORD32 *ptr_cmon_border_idx, WORD32 *ptr_tran_idx,
+                                       WORD32 *ptr_a_borders, WORD32 *ptr_border_vec_len,
+-                                      WORD32 tran
++                                      WORD32 tran, WORD32 num_time_slots
+ 
+ ) {
+   WORD32 i;
+ 
+   for (i = 0; i < *ptr_border_vec_len; i++) {
+-    if (ptr_a_borders[i] >= 16) {
++    if (ptr_a_borders[i] >= num_time_slots) {
+       *ptr_cmon_border_idx = i;
+       break;
+     }
+@@ -376,6 +377,48 @@ static VOID ixheaace_calc_cmon_border(WORD32 *ptr_cmon_border_idx, WORD32 *ptr_t
+   }
+ }
+ 
++/* Post-transient fill, spreading and common-border search. The common border becomes
++   absBordTrail of this frame and absBordLead of the next one; both are sent as offsets 0..3
++   (bs_var_bord_1 = absBordTrail - numTimeSlots, bs_var_bord_0, 2 bits each, ISO/IEC 14496-3
++   4.6.18.3.3). The fmax values are tuned for 16 time slots; with 15 (960-sample frames) the
++   post fill can overshoot, so it is redone with the next smaller even segment length. */
++static VOID ixheaace_fill_post_and_cmon(WORD32 *ptr_parts, WORD32 *ptr_d, WORD32 dmax,
++                                        WORD32 dmin, WORD32 *ptr_v_bord, WORD32 *ptr_length_v_bord,
++                                        ixheaace_freq_res *ptr_v_freq, WORD32 *ptr_length_v_freq,
++                                        WORD32 bmax, WORD32 fmax, WORD32 *ptr_spread_flag,
++                                        WORD32 allow_spread, WORD32 *ptr_i_cmon, WORD32 *ptr_i_tran,
++                                        WORD32 tran, WORD32 num_time_slots) {
++  WORD32 save_bord[2 * IXHEAACE_MAX_ENV_VARVAR + 1];
++  ixheaace_freq_res save_freq[2 * IXHEAACE_MAX_ENV_VARVAR + 1];
++  WORD32 save_len_bord = *ptr_length_v_bord, save_len_freq = *ptr_length_v_freq;
++  WORD32 save_spread = *ptr_spread_flag;
++
++  memcpy(save_bord, ptr_v_bord, sizeof(save_bord));
++  memcpy(save_freq, ptr_v_freq, sizeof(save_freq));
++  for (;;) {
++    ixheaace_fill_Frame_Post(ptr_parts, ptr_d, dmax, ptr_v_bord, ptr_length_v_bord, ptr_v_freq,
++                             ptr_length_v_freq, bmax, fmax, num_time_slots);
++
++    if (*ptr_parts == 1 && *ptr_d < dmin) {
++      ixheaace_special_case(ptr_spread_flag, allow_spread, ptr_v_bord, ptr_length_v_bord,
++                            ptr_v_freq, ptr_length_v_freq, ptr_parts, *ptr_d);
++    }
++
++    ixheaace_calc_cmon_border(ptr_i_cmon, ptr_i_tran, ptr_v_bord, ptr_length_v_bord, tran,
++                              num_time_slots);
++
++    if (ptr_v_bord[*ptr_i_cmon] <= num_time_slots + 3 || fmax <= 2) {
++      break;
++    }
++    memcpy(ptr_v_bord, save_bord, sizeof(save_bord));
++    memcpy(ptr_v_freq, save_freq, sizeof(save_freq));
++    *ptr_length_v_bord = save_len_bord;
++    *ptr_length_v_freq = save_len_freq;
++    *ptr_spread_flag = save_spread;
++    fmax -= 2;
++  }
++}
++
+ static VOID ixheaace_keep_for_follow_up(WORD32 *ptr_a_borders_follow,
+                                         WORD32 *ptr_border_vec_len_follow,
+                                         ixheaace_freq_res *ptr_a_freq_res_follow,
+@@ -383,7 +426,7 @@ static VOID ixheaace_keep_for_follow_up(WORD32 *ptr_a_borders_follow,
+                                         WORD32 *ptr_tran_idx_follow, WORD32 *ptr_fill_idx_follow,
+                                         WORD32 *ptr_a_borders, WORD32 *ptr_border_vec_len,
+                                         ixheaace_freq_res *ptr_freq_res, WORD32 cmon_border_idx,
+-                                        WORD32 tran_idx, WORD32 num_parts
++                                        WORD32 tran_idx, WORD32 num_parts, WORD32 num_time_slots
+ 
+ ) {
+   WORD32 L, i, j;
+@@ -396,7 +439,7 @@ static VOID ixheaace_keep_for_follow_up(WORD32 *ptr_a_borders_follow,
+   j = 0, i = cmon_border_idx;
+ 
+   while (i < L) {
+-    ptr_a_borders_follow[j] = ptr_a_borders[i] - 16;
++    ptr_a_borders_follow[j] = ptr_a_borders[i] - num_time_slots;
+ 
+     ptr_a_freq_res_follow[j] = ptr_freq_res[i];
+ 
+@@ -713,7 +756,8 @@ static VOID ixheaace_create_def_frame_480_info(ixheaace_pstr_sbr_frame_info pstr
+ 
+ static IA_ERRORCODE ixheaace_ctrl_signal2_frame_info(
+     ixheaace_pstr_sbr_grid pstr_sbr_grid, ixheaace_pstr_sbr_frame_info pstr_sbr_frame_info,
+-    ixheaace_freq_res freq_res_fix, ixheaace_str_qmf_tabs *ptr_qmf_tab, WORD32 frame_length_480) {
++    ixheaace_freq_res freq_res_fix, ixheaace_str_qmf_tabs *ptr_qmf_tab, WORD32 frame_length_480,
++    WORD32 num_time_slots) {
+   WORD32 n_env = 0, border = 0, i, k, p;
+   WORD32 *ptr_v_r = pstr_sbr_grid->bs_rel_bord;
+   ixheaace_freq_res *ptr_v_f = pstr_sbr_grid->v_f;
+@@ -808,7 +852,7 @@ static IA_ERRORCODE ixheaace_ctrl_signal2_frame_info(
+         pstr_sbr_frame_info->borders[k + 1] = border;
+       }
+ 
+-      pstr_sbr_frame_info->borders[n_env] = 16;
++      pstr_sbr_frame_info->borders[n_env] = num_time_slots;
+ 
+       p = pstr_sbr_grid->p;
+ 
+@@ -946,6 +990,8 @@ ixheaace_frame_info_generator(ixheaace_pstr_sbr_env_frame pstr_sbr_env_frame,
+ 
+   ixheaace_freq_res freq_res_fix = pstr_sbr_env_frame->freq_res_fix;
+ 
++  pstr_sbr_env_frame->sbr_grid.num_time_slots = num_time_slots;
++
+   if (is_ld_sbr) {
+     if ((!tran_flag && ptr_v_pre_transient_info[1]) &&
+         (num_time_slots - ptr_v_pre_transient_info[0] < 4)) {
+@@ -986,19 +1032,15 @@ ixheaace_frame_info_generator(ixheaace_pstr_sbr_env_frame pstr_sbr_env_frame,
+           ixheaace_fill_frame_pre(dmax, ptr_v_bord, ptr_length_v_bord, ptr_v_freq,
+                                   ptr_length_v_freq, bmin, bmin);
+ 
+-          ixheaace_fill_Frame_Post(&ptr_parts, &ptr_d, dmax, ptr_v_bord, ptr_length_v_bord,
+-                                   ptr_v_freq, ptr_length_v_freq, bmax, fmax);
+-
+-          if (ptr_parts == 1 && ptr_d < dmin) {
+-            ixheaace_special_case(ptr_spread_flag, allow_spread, ptr_v_bord, ptr_length_v_bord,
+-                                  ptr_v_freq, ptr_length_v_freq, &ptr_parts, ptr_d);
+-          }
+-
+-          ixheaace_calc_cmon_border(&i_cmon, &i_tran, ptr_v_bord, ptr_length_v_bord, tran);
++          ixheaace_fill_post_and_cmon(&ptr_parts, &ptr_d, dmax, dmin, ptr_v_bord,
++                                      ptr_length_v_bord, ptr_v_freq, ptr_length_v_freq, bmax,
++                                      fmax, ptr_spread_flag, allow_spread, &i_cmon, &i_tran,
++                                      tran, num_time_slots);
+           ixheaace_keep_for_follow_up(ptr_v_bord_follow, ptr_length_v_bord_follow,
+                                       ptr_v_freq_follow, ptr_length_v_freq_follow,
+                                       ptr_tran_follow, ptr_fill_follow, ptr_v_bord,
+-                                      ptr_length_v_bord, ptr_v_freq, i_cmon, i_tran, ptr_parts);
++                                      ptr_length_v_bord, ptr_v_freq, i_cmon, i_tran, ptr_parts,
++                                      num_time_slots);
+ 
+           ixheaace_calc_ctrl_signal(&pstr_sbr_env_frame->sbr_grid, frame_type, ptr_v_bord,
+                                     *ptr_length_v_bord, ptr_v_freq, *ptr_length_v_freq, i_cmon,
+@@ -1020,7 +1062,7 @@ ixheaace_frame_info_generator(ixheaace_pstr_sbr_env_frame pstr_sbr_env_frame,
+ 
+             *ptr_spread_flag = 0;
+ 
+-            ptr_v_bord_follow[0] = pstr_sbr_env_frame->sbr_grid.bs_abs_bord_1 - 16;
++            ptr_v_bord_follow[0] = pstr_sbr_env_frame->sbr_grid.bs_abs_bord_1 - num_time_slots;
+ 
+             ptr_v_freq_follow[0] = FREQ_RES_HIGH;
+             *ptr_length_v_bord_follow = 1;
+@@ -1034,20 +1076,16 @@ ixheaace_frame_info_generator(ixheaace_pstr_sbr_env_frame pstr_sbr_env_frame,
+                 ptr_length_v_freq, ptr_v_bord_follow, ptr_length_v_bord_follow, ptr_v_freq_follow,
+                 ptr_length_v_freq_follow, *ptr_fill_follow, dmin, dmax);
+ 
+-            ixheaace_fill_Frame_Post(&ptr_parts, &ptr_d, dmax, ptr_v_bord, ptr_length_v_bord,
+-                                     ptr_v_freq, ptr_length_v_freq, bmax, fmax);
+-
+-            if (ptr_parts == 1 && ptr_d < dmin) {
+-              ixheaace_special_case(ptr_spread_flag, allow_spread, ptr_v_bord, ptr_length_v_bord,
+-                                    ptr_v_freq, ptr_length_v_freq, &ptr_parts, ptr_d);
+-            }
+-
+-            ixheaace_calc_cmon_border(&i_cmon, &i_tran, ptr_v_bord, ptr_length_v_bord, tran);
++            ixheaace_fill_post_and_cmon(&ptr_parts, &ptr_d, dmax, dmin, ptr_v_bord,
++                                        ptr_length_v_bord, ptr_v_freq, ptr_length_v_freq, bmax,
++                                        fmax, ptr_spread_flag, allow_spread, &i_cmon, &i_tran,
++                                        tran, num_time_slots);
+ 
+             ixheaace_keep_for_follow_up(ptr_v_bord_follow, ptr_length_v_bord_follow,
+                                         ptr_v_freq_follow, ptr_length_v_freq_follow,
+                                         ptr_tran_follow, ptr_fill_follow, ptr_v_bord,
+-                                        ptr_length_v_bord, ptr_v_freq, i_cmon, i_tran, ptr_parts);
++                                        ptr_length_v_bord, ptr_v_freq, i_cmon, i_tran, ptr_parts,
++                                      num_time_slots);
+ 
+             ixheaace_calc_ctrl_signal(&pstr_sbr_env_frame->sbr_grid, frame_type, ptr_v_bord,
+                                       *ptr_length_v_bord, ptr_v_freq, *ptr_length_v_freq, i_cmon,
+@@ -1067,7 +1105,7 @@ ixheaace_frame_info_generator(ixheaace_pstr_sbr_env_frame pstr_sbr_env_frame,
+       }
+       err_code = ixheaace_ctrl_signal2_frame_info(
+           &pstr_sbr_env_frame->sbr_grid, &pstr_sbr_env_frame->sbr_frame_info, freq_res_fix,
+-          ptr_qmf_tab, flag_framelength_small);
++          ptr_qmf_tab, flag_framelength_small, num_time_slots);
+       if (err_code) {
+         return err_code;
+       }
+diff --git a/encoder/ixheaace_sbr_frame_info_gen.h b/encoder/ixheaace_sbr_frame_info_gen.h
+index 7f74e4e..766f671 100644
+--- a/encoder/ixheaace_sbr_frame_info_gen.h
++++ b/encoder/ixheaace_sbr_frame_info_gen.h
+@@ -56,6 +56,7 @@ typedef struct {
+   ixheaace_freq_res v_f_lr[IXHEAACE_MAX_ENV_VARVAR];
+   WORD32 bs_transient_position;
+   WORD32 abs_bord_vec[IXHEAACE_MAX_ABS_BORDERS];
++  WORD32 num_time_slots; /* numTimeSlots: 16, or 15 for 960-sample core frames */
+ } ixheaace_str_sbr_grid;
+ 
+ typedef ixheaace_str_sbr_grid *ixheaace_pstr_sbr_grid;
+diff --git a/encoder/ixheaace_sbr_main.c b/encoder/ixheaace_sbr_main.c
+index 64b6a2f..a0520ff 100644
+--- a/encoder/ixheaace_sbr_main.c
++++ b/encoder/ixheaace_sbr_main.c
+@@ -234,6 +234,11 @@ static IA_ERRORCODE ixheaace_create_env_channel(
+     return err_code;
+   }
+ 
++  if (params->frame_flag_960 && (params->sbr_codec == HEAAC_SBR)) {
++    /* 15 SBR time slots per 960-sample core frame */
++    pstr_env->str_ton_corr.sbr_missing_har_detector.time_slots = 15;
++  }
++
+   pstr_env->enc_env_data.noise_band_count =
+       pstr_env->str_ton_corr.sbr_noise_floor_est.num_of_noise_bands;
+ 
+@@ -262,7 +267,8 @@ static IA_ERRORCODE ixheaace_create_env_channel(
+   }
+   err_code = ixheaace_create_extract_sbr_envelope(
+       ch, &pstr_env->str_sbr_extract_env, start_index, ptr_common_buffer2, ptr_sbr_env_r_buf,
+-      ptr_sbr_env_i_buf, params->is_ld_sbr, params->frame_flag_480, params->sbr_codec);
++      ptr_sbr_env_i_buf, params->is_ld_sbr, (params->frame_flag_480 || params->frame_flag_960),
++      params->sbr_codec);
+   if (err_code) {
+     return err_code;
+   }
+@@ -291,7 +297,8 @@ static IA_ERRORCODE ixheaace_create_env_channel(
+       &pstr_env->str_sbr_trans_detector, pstr_sbr_cfg->sample_freq,
+       params->codec_settings.standard_bitrate * params->codec_settings.num_channels,
+       params->codec_settings.bit_rate, params->tran_thr, params->tran_det_mode, tran_fc,
+-      params->frame_flag_480, params->is_ld_sbr, params->sbr_ratio_idx, params->sbr_codec,
++      (params->frame_flag_480 || params->frame_flag_960), params->is_ld_sbr,
++      params->sbr_ratio_idx, params->sbr_codec,
+       pstr_sbr_cfg->ptr_freq_band_tab[0][0]);
+ 
+   pstr_sbr_cfg->xpos_control_switch = params->sbr_xpos_ctrl;
+@@ -987,7 +994,8 @@ ixheaace_env_open(ixheaace_pstr_sbr_enc *pstr_env_encoder, ixheaace_pstr_sbr_cfg
+   }
+   if (params->send_header_data_time > 0) {
+     pstr_env_enc->str_sbr_bs.nr_send_header_data = (WORD32)(
+-        params->send_header_data_time * 0.001 * pstr_env_enc->str_sbr_cfg.sample_freq / 2048);
++        params->send_header_data_time * 0.001 * pstr_env_enc->str_sbr_cfg.sample_freq /
++        (params->frame_flag_960 ? 1920 : 2048));
+ 
+     pstr_env_enc->str_sbr_bs.nr_send_header_data =
+         ixheaac_max32(pstr_env_enc->str_sbr_bs.nr_send_header_data, 1);
+diff --git a/encoder/ixheaace_sbr_tran_det.c b/encoder/ixheaace_sbr_tran_det.c
+index 3f9363f..8893ae0 100644
+--- a/encoder/ixheaace_sbr_tran_det.c
++++ b/encoder/ixheaace_sbr_tran_det.c
+@@ -211,6 +211,13 @@ VOID ixheaace_create_sbr_transient_detector(
+     no_cols = 30;
+     buffer_length = 90;
+   }
++  if ((sbr_codec == HEAAC_SBR) && (0 == is_ld_sbr) && (1 == frame_flag_480)) {
++    /* HE-AAC, 960-sample core frame: 30 QMF slots = 1920 output samples per SBR frame */
++    no_cols = 30;
++    buffer_length = 90;
++    frm_dur = 1920.0f / (FLOAT32)sample_freq;
++    split_thr_fac = frm_dur - 0.01f;
++  }
+ 
+   memset(pstr_sbr_trans_detector, 0, sizeof(ixheaace_str_sbr_trans_detector));
+ 
+diff --git a/encoder/ixheaace_sbr_write_bitstream.c b/encoder/ixheaace_sbr_write_bitstream.c
+index 1afe4d1..5d2d392 100644
+--- a/encoder/ixheaace_sbr_write_bitstream.c
++++ b/encoder/ixheaace_sbr_write_bitstream.c
+@@ -180,7 +180,9 @@ static WORD32 ixheaace_encode_sbr_grid(ixheaace_pstr_sbr_env_data pstr_sbr_env_i
+         case IXHEAACE_VARFIX:
+ 
+           if (pstr_sbr_env_info->pstr_sbr_bs_grid->frame_type == IXHEAACE_FIXVAR) {
+-            tmp_var = pstr_sbr_env_info->pstr_sbr_bs_grid->bs_abs_bord - 16;
++            /* bs_var_bord_1 = absBordTrail - numTimeSlots (ISO/IEC 14496-3 4.6.18.3.3) */
++            tmp_var = pstr_sbr_env_info->pstr_sbr_bs_grid->bs_abs_bord -
++                      pstr_sbr_env_info->pstr_sbr_bs_grid->num_time_slots;
+           } else {
+             tmp_var = pstr_sbr_env_info->pstr_sbr_bs_grid->bs_abs_bord;
+           }
+@@ -212,7 +214,8 @@ static WORD32 ixheaace_encode_sbr_grid(ixheaace_pstr_sbr_env_data pstr_sbr_env_i
+           tmp_var = pstr_sbr_env_info->pstr_sbr_bs_grid->bs_abs_bord_0;
+ 
+           payload_cnt_bits += ixheaace_write_bits(pstr_bs_handle, tmp_var, SBR_ABS_BITS);
+-          tmp_var = pstr_sbr_env_info->pstr_sbr_bs_grid->bs_abs_bord_1 - 16;
++          tmp_var = pstr_sbr_env_info->pstr_sbr_bs_grid->bs_abs_bord_1 -
++                    pstr_sbr_env_info->pstr_sbr_bs_grid->num_time_slots;
+ 
+           payload_cnt_bits += ixheaace_write_bits(pstr_bs_handle, tmp_var, SBR_ABS_BITS);
+ 
