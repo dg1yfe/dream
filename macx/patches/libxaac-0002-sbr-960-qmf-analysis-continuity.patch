@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 14:35:01 +0100
+Subject: [PATCH] SBR 960: keep the analysis QMF state ring continuous
+
+ixheaace_sbr_analysis_filtering() advanced its 10-block state ring by 2 blocks per frame
+(32 slots mod 10). With 960-sample frames there are 30 QMF slots (advance 0), so every
+frame restarted the filter bank on stale history (SNR -2 dB against 32-slot framing of the
+same signal; 415 dB after the fix). The advance is now num_qmf_subsamp mod 10.
+---
+ encoder/ixheaace_sbr_qmf_enc.c | 8 +++-----
+ 1 file changed, 3 insertions(+), 5 deletions(-)
+
+diff --git a/encoder/ixheaace_sbr_qmf_enc.c b/encoder/ixheaace_sbr_qmf_enc.c
+index 9ac3210..d8b1521 100644
+--- a/encoder/ixheaace_sbr_qmf_enc.c
++++ b/encoder/ixheaace_sbr_qmf_enc.c
+@@ -868,11 +868,9 @@ VOID ixheaace_sbr_analysis_filtering(const FLOAT32 *ptr_time_in, WORD32 time_sn_
+     pstr_qmf_bank->ptr_qmf_states_curr_pos =
+         ((FLOAT32 *)(pstr_qmf_bank->ptr_qmf_states_buf) + (pstr_qmf_bank->offset * 64));
+ 
+-    if (pstr_qmf_bank->offset == 8) {
+-      pstr_qmf_bank->offset = 0;
+-    } else {
+-      pstr_qmf_bank->offset += 2;
+-    }
++    /* The 640-sample state ring holds 10 blocks of 64; each QMF slot consumes one block, so the
++       next frame starts num_qmf_subsamp blocks later (32 slots -> +2, 30 slots (960) -> +0). */
++    pstr_qmf_bank->offset = (WORD16)((pstr_qmf_bank->offset + num_qmf_subsamp) % 10);
+ 
+     ptr_start_coeff_l = pstr_qmf_bank->ptr_ref_coeff_l + pstr_qmf_bank->offset_l;
+     ptr_start_coeff_r = pstr_qmf_bank->ptr_ref_coeff_r - pstr_qmf_bank->offset_r;

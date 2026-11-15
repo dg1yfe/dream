@@ -1,0 +1,403 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 14:35:01 +0100
+Subject: [PATCH] HE-AAC v2 960: PS encoder and downmix QMF synthesis with 30
+ slots
+
+The PS encoder (hybrid analysis/synthesis, parameter estimation over two half frames,
+downmix with the 6-slot hybrid delay) and the downmix QMF synthesis hard-coded 32 QMF
+slots; at 960 the analysis was zero-padded to 32 slots and the synthesis wrote 1024 core
+samples per 960-sample frame, so the AAC core coded garbage (core SNR 0.1 dB). They now
+run over the frame's slot count (30 for 960; buffer strides keep the 32-slot layout).
+---
+ encoder/ixheaace_hybrid.c      | 27 +++++++++++--------
+ encoder/ixheaace_hybrid_init.c |  1 +
+ encoder/ixheaace_ps_enc.c      | 48 +++++++++++++++++++---------------
+ encoder/ixheaace_ps_enc_init.c |  1 +
+ encoder/ixheaace_sbr_env_est.c |  2 +-
+ encoder/ixheaace_sbr_hybrid.h  |  5 ++--
+ encoder/ixheaace_sbr_main.c    |  6 +++++
+ encoder/ixheaace_sbr_ps_enc.h  |  1 +
+ encoder/ixheaace_sbr_qmf_enc.c |  6 +++--
+ encoder/ixheaace_sbr_qmf_enc.h |  3 ++-
+ 10 files changed, 62 insertions(+), 38 deletions(-)
+
+diff --git a/encoder/ixheaace_hybrid.c b/encoder/ixheaace_hybrid.c
+index 86b74a2..089729a 100644
+--- a/encoder/ixheaace_hybrid.c
++++ b/encoder/ixheaace_hybrid.c
+@@ -36,7 +36,8 @@ VOID ia_enhaacplus_enc_fft(complex *out, WORD32 N, ixheaace_common_tables *);
+ static VOID ixheaace_four_chan_filtering(const FLOAT32 *ptr_qmf_real, const FLOAT32 *ptr_qmf_imag,
+                                          FLOAT32 **ptr_hyb_real, FLOAT32 **ptr_hyb_imag,
+                                          WORD32 ch_offset, const FLOAT32 *ptr_p4_13,
+-                                         ixheaace_common_tables *pstr_common_tab) {
++                                         ixheaace_common_tables *pstr_common_tab,
++                                         WORD32 num_time_slots) {
+   WORD32 i, k, n;
+   WORD32 mid_tap = IXHEAACE_HYBRID_FILTER_DELAY;
+ 
+@@ -50,7 +51,8 @@ static VOID ixheaace_four_chan_filtering(const FLOAT32 *ptr_qmf_real, const FLOA
+   ptr_hy_re = &ptr_hyb_real[0][ch_offset];
+   ptr_hy_im = &ptr_hyb_imag[0][ch_offset];
+ 
+-  for (i = IXHEAACE_QMF_TIME_SLOTS - 1; i >= 0; i--) {
++  /* loop over the frame's QMF slots; "+= IXHEAACE_QMF_TIME_SLOTS - 4" below is the row stride */
++  for (i = num_time_slots - 1; i >= 0; i--) {
+     real = imag = 0;
+     for (k = 0; k < 16; k += 4) {
+       tmp_p4 = ptr_p4_13[k];
+@@ -123,7 +125,8 @@ static VOID ixheaace_four_chan_filtering(const FLOAT32 *ptr_qmf_real, const FLOA
+ static VOID ixheaace_eight_chan_filtering(const FLOAT32 *ptr_qmf_real,
+                                           const FLOAT32 *ptr_qmf_imag, FLOAT32 **ptr_hyb_real,
+                                           FLOAT32 **ptr_hyb_imag, const FLOAT32 *ptr_p8_13,
+-                                          ixheaace_common_tables *pstr_common_tab)
++                                          ixheaace_common_tables *pstr_common_tab,
++                                          WORD32 num_time_slots)
+ 
+ {
+   LOOPINDEX i, n;
+@@ -138,7 +141,7 @@ static VOID ixheaace_eight_chan_filtering(const FLOAT32 *ptr_qmf_real,
+   ptr_hy_re = &ptr_hyb_real[0][0];
+   ptr_hy_im = &ptr_hyb_imag[0][0];
+ 
+-  for (i = IXHEAACE_QMF_TIME_SLOTS - 1; i >= 0; i--) {
++  for (i = num_time_slots - 1; i >= 0; i--) {
+     tmp1 = ptr_p8_13[4] * ptr_re[4];
+     tmp2 = ptr_p8_13[12] * ptr_re[12];
+ 
+@@ -267,6 +270,7 @@ IA_ERRORCODE ixheaace_hybrid_analysis(const FLOAT32 **ptr_qmf_real_in,
+   FLOAT32 *ptr_re, *ptr_im;
+   const FLOAT32 *ptr_qmf_real, *ptr_qmf_imag;
+   FLOAT32 tmp1, tmp2;
++  WORD32 num_time_slots = pstr_hybrid->num_time_slots;
+ 
+   for (band = 0; band < IXHEAACE_NUM_QMF_BANDS_IN_HYBRID; band++) {
+     hybrid_res = (ixheaace_hybrid_res)pstr_ps_tab->a_hyb_res[band];
+@@ -280,7 +284,7 @@ IA_ERRORCODE ixheaace_hybrid_analysis(const FLOAT32 **ptr_qmf_real_in,
+     ptr_qmf_real = &ptr_qmf_real_in[0][band];
+     ptr_qmf_imag = &ptr_qmf_imag_in[0][band];
+ 
+-    for (i = IXHEAACE_QMF_TIME_SLOTS - 1; i >= 0; i--) {
++    for (i = num_time_slots - 1; i >= 0; i--) {
+       tmp1 = *ptr_qmf_real;
+       tmp2 = *ptr_qmf_imag;
+ 
+@@ -294,8 +298,8 @@ IA_ERRORCODE ixheaace_hybrid_analysis(const FLOAT32 **ptr_qmf_real_in,
+     ptr_re = &pstr_hybrid->ptr_qmf_buf_real[band][0];
+     ptr_im = &pstr_hybrid->ptr_qmf_buf_imag[band][0];
+ 
+-    ptr_qmf_real = &ptr_qmf_real_in[IXHEAACE_QMF_TIME_SLOTS - IXHEAACE_QMF_BUFFER_MOVE][band];
+-    ptr_qmf_imag = &ptr_qmf_imag_in[IXHEAACE_QMF_TIME_SLOTS - IXHEAACE_QMF_BUFFER_MOVE][band];
++    ptr_qmf_real = &ptr_qmf_real_in[num_time_slots - IXHEAACE_QMF_BUFFER_MOVE][band];
++    ptr_qmf_imag = &ptr_qmf_imag_in[num_time_slots - IXHEAACE_QMF_BUFFER_MOVE][band];
+ 
+     for (i = 0; i < IXHEAACE_QMF_BUFFER_MOVE; i++) {
+       tmp1 = *ptr_qmf_real;
+@@ -310,12 +314,12 @@ IA_ERRORCODE ixheaace_hybrid_analysis(const FLOAT32 **ptr_qmf_real_in,
+       case IXHEAACE_HYBRID_4_CPLX:
+         ixheaace_four_chan_filtering(pstr_hybrid->ptr_work_real, pstr_hybrid->ptr_work_imag,
+                                      ptr_hyb_real_in, ptr_hyb_imag_in, ch_offset,
+-                                     pstr_ps_tab->p4_13, pstr_common_tab);
++                                     pstr_ps_tab->p4_13, pstr_common_tab, num_time_slots);
+         break;
+       case IXHEAACE_HYBRID_8_CPLX:
+         ixheaace_eight_chan_filtering(pstr_hybrid->ptr_work_real, pstr_hybrid->ptr_work_imag,
+                                       ptr_hyb_real_in, ptr_hyb_imag_in, pstr_ps_tab->p8_13,
+-                                      pstr_common_tab);
++                                      pstr_common_tab, num_time_slots);
+         break;
+       default:
+         return IA_EXHEAACE_EXE_FATAL_PS_INVALID_HYBRID_RES_VAL;
+@@ -328,7 +332,8 @@ IA_ERRORCODE ixheaace_hybrid_analysis(const FLOAT32 **ptr_qmf_real_in,
+ 
+ VOID ixheaace_hybrid_synthesis(const FLOAT32 **ptr_hybrid_real_flt,
+                                const FLOAT32 **ptr_hybrid_imag_flt, FLOAT32 **ptr_qmf_real_flt,
+-                               FLOAT32 **ptr_qmf_imag_flt, const WORD32 *ptr_hyb_res) {
++                               FLOAT32 **ptr_qmf_imag_flt, const WORD32 *ptr_hyb_res,
++                               WORD32 num_time_slots) {
+   WORD32 k, n, band;
+   ixheaace_hybrid_res hybrid_res;
+   WORD32 ch_offset = 0;
+@@ -346,7 +351,7 @@ VOID ixheaace_hybrid_synthesis(const FLOAT32 **ptr_hybrid_real_flt,
+     ptr_qmf_real = &ptr_qmf_real_flt[0][band];
+     ptr_qmf_imag = &ptr_qmf_imag_flt[0][band];
+ 
+-    for (n = 0; n < IXHEAACE_QMF_TIME_SLOTS; n++) {
++    for (n = 0; n < num_time_slots; n++) {
+       FLOAT32 temo_real = 0, temo_imag = 0;
+ 
+       for (k = hybrid_res - 1; k >= 0; k--) {
+diff --git a/encoder/ixheaace_hybrid_init.c b/encoder/ixheaace_hybrid_init.c
+index e88ab23..3aac05b 100644
+--- a/encoder/ixheaace_hybrid_init.c
++++ b/encoder/ixheaace_hybrid_init.c
+@@ -35,6 +35,7 @@ ixheaace_create_hybrid_filter_bank(ixheaace_pstr_hybrid pstr_hybrid, FLOAT32 **p
+   LOOPINDEX i;
+   FLOAT32 *ptr_flt = *pptr_flt;
+ 
++  pstr_hybrid->num_time_slots = IXHEAACE_QMF_TIME_SLOTS;
+   pstr_hybrid->ptr_work_real = ptr_flt;
+   ptr_flt += (IXHEAACE_QMF_TIME_SLOTS + IXHEAACE_QMF_BUFFER_MOVE);
+   pstr_hybrid->ptr_work_imag = ptr_flt;
+diff --git a/encoder/ixheaace_ps_enc.c b/encoder/ixheaace_ps_enc.c
+index 4a1626c..8bd1f89 100644
+--- a/encoder/ixheaace_ps_enc.c
++++ b/encoder/ixheaace_ps_enc.c
+@@ -52,13 +52,15 @@ static VOID ia_enhaacplus_enc_downmix_to_mono(ixheaace_pstr_ps_enc pms, FLOAT32
+   FLOAT32 temp_right_real;
+   FLOAT32 temp_right_imag;
+   FLOAT32 temp, temp2;
++  /* QMF slots per frame: 32, or 30 for 960-sample core frames */
++  WORD32 num_slots = pms->num_time_slots;
+ 
+   for (i = 0; i < IXHEAACE_HYBRID_FILTER_DELAY; i++) {
+     ixheaace_memcpy(pms->temp_qmf_left_real[i],
+-                    qmf_left_real[NUMBER_OF_SUBSAMPLES - IXHEAACE_HYBRID_FILTER_DELAY + i],
++                    qmf_left_real[num_slots - IXHEAACE_HYBRID_FILTER_DELAY + i],
+                     NUMBER_OF_QMF_BANDS * sizeof(**qmf_left_real));
+     ixheaace_memcpy(pms->temp_qmf_left_imag[i],
+-                    qmf_left_imag[NUMBER_OF_SUBSAMPLES - IXHEAACE_HYBRID_FILTER_DELAY + i],
++                    qmf_left_imag[num_slots - IXHEAACE_HYBRID_FILTER_DELAY + i],
+                     NUMBER_OF_QMF_BANDS * sizeof(**qmf_left_imag));
+   }
+ 
+@@ -74,7 +76,7 @@ static VOID ia_enhaacplus_enc_downmix_to_mono(ixheaace_pstr_ps_enc pms, FLOAT32
+       hybrid_left_real = hybrid_left_real_init + subband;
+       hybrid_right_real = hybrid_right_real_init + subband;
+ 
+-      for (i = NUMBER_OF_SUBSAMPLES; i != 0; i--) {
++      for (i = num_slots; i != 0; i--) {
+         FLOAT32 temp_left_real_1, temp_left_imag_1;
+ 
+         temp_left_real = hybrid_left_real[0];
+@@ -113,17 +115,17 @@ static VOID ia_enhaacplus_enc_downmix_to_mono(ixheaace_pstr_ps_enc pms, FLOAT32
+ 
+   for (; group < NUMBER_OF_IPD_GROUPS; group++) {
+     FLOAT32 *hybrid_left_real;
+-    FLOAT32 *qmf_lre = qmf_left_real[NUMBER_OF_SUBSAMPLES - 1];
++    FLOAT32 *qmf_lre = qmf_left_real[num_slots - 1];
+ 
+     subband_grp = ps_tables->grp_borders_mix[group];
+     max_subband = ps_tables->grp_borders_mix[group + 1];
+ 
+     hybrid_left_real =
+-        (qmf_left_real - IXHEAACE_HYBRID_FILTER_DELAY)[NUMBER_OF_SUBSAMPLES - 1] + 0X1000;
++        (qmf_left_real - IXHEAACE_HYBRID_FILTER_DELAY)[num_slots - 1] + 0X1000;
+     hybrid_left_real += subband_grp;
+     qmf_lre += subband_grp;
+ 
+-    for (i = NUMBER_OF_SUBSAMPLES - 1; i >= IXHEAACE_HYBRID_FILTER_DELAY; i--) {
++    for (i = num_slots - 1; i >= IXHEAACE_HYBRID_FILTER_DELAY; i--) {
+       for (subband = max_subband - subband_grp; subband != 0; subband--) {
+         FLOAT32 temp_left_real_1, temp_left_imag_1;
+ 
+@@ -217,16 +219,16 @@ static VOID ia_enhaacplus_enc_downmix_to_mono(ixheaace_pstr_ps_enc pms, FLOAT32
+     ixheaace_memcpy(pms->hist_qmf_left_imag[i], pms->temp_qmf_left_imag[i],
+                     NUMBER_OF_QMF_BANDS * sizeof(**qmf_left_imag));
+     ixheaace_memcpy(pms->hist_qmf_right_real[i],
+-                    qmf_right_real[NUMBER_OF_SUBSAMPLES - IXHEAACE_HYBRID_FILTER_DELAY + i],
++                    qmf_right_real[num_slots - IXHEAACE_HYBRID_FILTER_DELAY + i],
+                     NUMBER_OF_QMF_BANDS * sizeof(**qmf_right_real));
+     ixheaace_memcpy(pms->hist_qmf_right_imag[i],
+-                    qmf_right_imag[NUMBER_OF_SUBSAMPLES - IXHEAACE_HYBRID_FILTER_DELAY + i],
++                    qmf_right_imag[num_slots - IXHEAACE_HYBRID_FILTER_DELAY + i],
+                     NUMBER_OF_QMF_BANDS * sizeof(**qmf_right_imag));
+   }
+ 
+   ixheaace_hybrid_synthesis((const FLOAT32 **)pms->m_hybrid_real_left,
+                             (const FLOAT32 **)pms->m_hybrid_imag_left, qmf_left_real,
+-                            qmf_left_imag, ps_tables->a_hyb_res);
++                            qmf_left_imag, ps_tables->a_hyb_res, num_slots);
+ }
+ 
+ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buffer_left,
+@@ -282,6 +284,9 @@ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buff
+   FLOAT32 temp_power_right_env2;
+   FLOAT32 temp_power_corr_real_env2;
+   FLOAT32 temp_power_corr_imag_env2;
++  /* Each frame is split into two halves of num_slots / 2 QMF slots (16, or 15 for 960). */
++  WORD32 num_slots = pms->num_time_slots;
++  WORD32 half_slots = num_slots / 2;
+ 
+   err_code = ixheaace_hybrid_analysis((const FLOAT32 **)(r_buffer_left),
+                                       (const FLOAT32 **)(i_buffer_left), pms->m_hybrid_real_left,
+@@ -305,10 +310,10 @@ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buff
+     hybrid_right_real_env1 = pms->m_hybrid_real_right;
+     hybrid_right_imag_env1 = pms->m_hybrid_imag_right;
+ 
+-    hybrid_left_real_env2 = &(pms->m_hybrid_real_left[NUMBER_OF_SUBSAMPLES / 2]);
+-    hybrid_left_imag_env2 = &(pms->m_hybrid_imag_left[NUMBER_OF_SUBSAMPLES / 2]);
+-    hybr_right_real_env2 = &(pms->m_hybrid_real_right[NUMBER_OF_SUBSAMPLES / 2]);
+-    hybr_right_imag_env2 = &(pms->m_hybrid_imag_right[NUMBER_OF_SUBSAMPLES / 2]);
++    hybrid_left_real_env2 = &(pms->m_hybrid_real_left[half_slots]);
++    hybrid_left_imag_env2 = &(pms->m_hybrid_imag_left[half_slots]);
++    hybr_right_real_env2 = &(pms->m_hybrid_real_right[half_slots]);
++    hybr_right_imag_env2 = &(pms->m_hybrid_imag_right[half_slots]);
+ 
+     for (bin = 0; bin < SUBQMF_BINS_ENERGY; bin++) {
+       band_power_left_env1 = 0;
+@@ -325,7 +330,7 @@ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buff
+       for (subband = ps_tables->hi_res_band_borders[bin]; subband < max_subband; subband++) {
+         FLOAT32 t_left_real, t_left_imag, t_right_real, t_right_imag;
+ 
+-        for (i = 0; i < NUMBER_OF_SUBSAMPLES / 2; i++) {
++        for (i = 0; i < half_slots; i++) {
+           // Envelope 1
+           t_left_real = hybrid_left_real_env1[i][subband];
+           t_right_real = hybrid_right_real_env1[i][subband];
+@@ -396,13 +401,13 @@ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buff
+     hybrid_right_imag_env1 = i_buffer_right;
+ 
+     hybrid_left_real_env2 =
+-        &r_buffer_left[NUMBER_OF_SUBSAMPLES / 2 - IXHEAACE_HYBRID_FILTER_DELAY];
++        &r_buffer_left[half_slots - IXHEAACE_HYBRID_FILTER_DELAY];
+     hybrid_left_imag_env2 =
+-        &i_buffer_left[NUMBER_OF_SUBSAMPLES / 2 - IXHEAACE_HYBRID_FILTER_DELAY];
++        &i_buffer_left[half_slots - IXHEAACE_HYBRID_FILTER_DELAY];
+     hybr_right_real_env2 =
+-        &r_buffer_right[NUMBER_OF_SUBSAMPLES / 2 - IXHEAACE_HYBRID_FILTER_DELAY];
++        &r_buffer_right[half_slots - IXHEAACE_HYBRID_FILTER_DELAY];
+     hybr_right_imag_env2 =
+-        &i_buffer_right[NUMBER_OF_SUBSAMPLES / 2 - IXHEAACE_HYBRID_FILTER_DELAY];
++        &i_buffer_right[half_slots - IXHEAACE_HYBRID_FILTER_DELAY];
+ 
+     for (bin = SUBQMF_BINS_ENERGY; bin < NUMBER_OF_BINS; bin++) {
+       band_power_left_env1 = 0;
+@@ -438,7 +443,7 @@ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buff
+         temp_power_corr_real_env2 = 0;
+         temp_power_corr_imag_env2 = 0;
+ 
+-        for (i = 0; i < 6; i++) {
++        for (i = 0; i < IXHEAACE_HYBRID_FILTER_DELAY; i++) {
+           t_left_real = hist_left_real[i][subband];
+           t_left_imag = hist_left_imag[i][subband];
+           t_right_real = hist_right_real[i][subband];
+@@ -503,7 +508,8 @@ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buff
+           temp_power_corr_imag_env2 += (temp1 - temp2);
+         }
+ 
+-        for (i = 6; i < 10; i++) {
++        for (i = IXHEAACE_HYBRID_FILTER_DELAY; i < half_slots - IXHEAACE_HYBRID_FILTER_DELAY;
++             i++) {
+           t_left_real = hybrid_left_real_env1[i][subband];
+           t_left_imag = hybrid_left_imag_env1[i][subband];
+           t_right_real = hybrid_right_real_env1[i][subband];
+@@ -547,7 +553,7 @@ IA_ERRORCODE ixheaace_encode_ps_frame(ixheaace_pstr_ps_enc pms, FLOAT32 **i_buff
+           temp_power_corr_imag_env2 += (temp1 - temp2);
+         }
+ 
+-        for (i = 10; i < 16; i++) {
++        for (i = half_slots - IXHEAACE_HYBRID_FILTER_DELAY; i < half_slots; i++) {
+           t_left_real = hybrid_left_real_env2[i][subband];
+           t_left_imag = hybrid_left_imag_env2[i][subband];
+           t_right_real = hybr_right_real_env2[i][subband];
+diff --git a/encoder/ixheaace_ps_enc_init.c b/encoder/ixheaace_ps_enc_init.c
+index c055184..bbf89d7 100644
+--- a/encoder/ixheaace_ps_enc_init.c
++++ b/encoder/ixheaace_ps_enc_init.c
+@@ -61,6 +61,7 @@ ixheaace_create_ps_enc(ixheaace_pstr_ps_enc pstr_ps_enc, WORD32 ps_mode,
+   ptr4 = &ptr_common_buffer[5 * NO_OF_ESTIMATES * MAXIMUM_FREQ_COEFFS];
+ 
+   pstr_ps_enc->ps_mode = ps_mode;
++  pstr_ps_enc->num_time_slots = IXHEAACE_QMF_TIME_SLOTS;
+   pstr_ps_enc->b_prev_zero_iid = 0;
+   pstr_ps_enc->b_prev_zero_icc = 0;
+   pstr_ps_enc->b_hi_freq_res_iid_icc = ((ps_mode & PS_MODE_LOW_FREQ_RES_IID_ICC) != 0) ? 0 : 1;
+diff --git a/encoder/ixheaace_sbr_env_est.c b/encoder/ixheaace_sbr_env_est.c
+index a02e0bd..218afda 100644
+--- a/encoder/ixheaace_sbr_env_est.c
++++ b/encoder/ixheaace_sbr_env_est.c
+@@ -2128,7 +2128,7 @@ IA_ERRORCODE ixheaace_extract_sbr_envelope(FLOAT32 *ptr_in_time, FLOAT32 *ptr_co
+     ixheaace_enc_synthesis_qmf_filtering(
+         pstr_env_ch[0]->str_sbr_extract_env.ptr_r_buffer,
+         pstr_env_ch[0]->str_sbr_extract_env.ptr_i_buffer, ptr_core_buf,
+-        (ixheaace_pstr_sbr_qmf_filter_bank)pstr_synthesis_qmf_bank);
++        (ixheaace_pstr_sbr_qmf_filter_bank)pstr_synthesis_qmf_bank, pstr_ps_enc->num_time_slots);
+   }
+ 
+   ch = 0;
+diff --git a/encoder/ixheaace_sbr_hybrid.h b/encoder/ixheaace_sbr_hybrid.h
+index 623d100..b2ead4e 100644
+--- a/encoder/ixheaace_sbr_hybrid.h
++++ b/encoder/ixheaace_sbr_hybrid.h
+@@ -39,14 +39,15 @@ typedef struct {
+   FLOAT32 *ptr_work_imag;
+   FLOAT32 **ptr_qmf_buf_real;
+   FLOAT32 **ptr_qmf_buf_imag;
+-
++  WORD32 num_time_slots; /* QMF slots per frame: 32, or 30 for 960-sample core frames */
+ } ixheaace_str_hybrid;
+ 
+ typedef ixheaace_str_hybrid *ixheaace_pstr_hybrid;
+ 
+ VOID ixheaace_hybrid_synthesis(const FLOAT32 **ptr_hybrid_real_flt,
+                                const FLOAT32 **ptr_hybrid_imag_flt, FLOAT32 **ptr_qmf_real_flt,
+-                               FLOAT32 **ptr_qmf_imag_flt, const WORD32 *ptr_hyb_res);
++                               FLOAT32 **ptr_qmf_imag_flt, const WORD32 *ptr_hyb_res,
++                               WORD32 num_time_slots);
+ 
+ IA_ERRORCODE ixheaace_hybrid_analysis(const FLOAT32 **ptr_qmf_real_in,
+                                       const FLOAT32 **ptr_qmf_imag_in, FLOAT32 **ptr_hyb_real_in,
+diff --git a/encoder/ixheaace_sbr_main.c b/encoder/ixheaace_sbr_main.c
+index a0520ff..c2c95ca 100644
+--- a/encoder/ixheaace_sbr_main.c
++++ b/encoder/ixheaace_sbr_main.c
+@@ -1092,6 +1092,12 @@ ixheaace_env_open(ixheaace_pstr_sbr_enc *pstr_env_encoder, ixheaace_pstr_sbr_cfg
+     if (err_code) {
+       return err_code;
+     }
++    if (params->frame_flag_960) {
++      /* 960-sample core frame: 30 QMF slots of 64 input samples (1920 at the SBR rate) */
++      pstr_env_enc->pstr_ps_enc->num_time_slots = 30;
++      pstr_env_enc->pstr_ps_enc->hybrid_left.num_time_slots = 30;
++      pstr_env_enc->pstr_ps_enc->hybrid_right.num_time_slots = 30;
++    }
+   }
+ 
+   pstr_env_enc->str_cmon_data.sbr_num_channels = pstr_env_enc->str_sbr_cfg.num_ch;
+diff --git a/encoder/ixheaace_sbr_ps_enc.h b/encoder/ixheaace_sbr_ps_enc.h
+index 58c00a5..fd662e2 100644
+--- a/encoder/ixheaace_sbr_ps_enc.h
++++ b/encoder/ixheaace_sbr_ps_enc.h
+@@ -54,6 +54,7 @@ struct ixheaace_ps_enc {
+   WORD8 a_last_iid_index[NUMBER_OF_IID_BINS];
+   WORD8 a_last_icc_index[NUMBER_OF_ICC_BINS];
+ 
++  WORD32 num_time_slots; /* QMF slots per frame: 32, or 30 for 960-sample core frames */
+   ixheaace_str_hybrid hybrid_left;
+   ixheaace_str_hybrid hybrid_right;
+ 
+diff --git a/encoder/ixheaace_sbr_qmf_enc.c b/encoder/ixheaace_sbr_qmf_enc.c
+index d8b1521..2390bb8 100644
+--- a/encoder/ixheaace_sbr_qmf_enc.c
++++ b/encoder/ixheaace_sbr_qmf_enc.c
+@@ -1324,11 +1324,13 @@ static VOID ixheaace_win_add(FLOAT32 *ptr_time_buf, FLOAT32 *ptr_work_buffer,
+ 
+ VOID ixheaace_enc_synthesis_qmf_filtering(FLOAT32 **ptr_sbr_re, FLOAT32 **ptr_sbr_im,
+                                           FLOAT32 *time_float,
+-                                          ixheaace_pstr_sbr_qmf_filter_bank pstr_qmf_bank) {
++                                          ixheaace_pstr_sbr_qmf_filter_bank pstr_qmf_bank,
++                                          WORD32 num_time_slots) {
+   WORD32 k, j;
+   FLOAT32 *timeBuf_flt;
+   const FLOAT32 *ptr_filter = pstr_qmf_bank->ptr_flt_filter;
+-  for (k = 0; k < 32; k++) {
++  /* one 32-sample core block per QMF slot: 32 slots -> 1024, 30 slots -> 960 samples */
++  for (k = 0; k < num_time_slots; k++) {
+     ixheaace_inverse_modulation(*(ptr_sbr_re + k), *(ptr_sbr_im + k),
+                                 pstr_qmf_bank->ptr_flt_work_buf, pstr_qmf_bank);
+     ixheaace_win_add(pstr_qmf_bank->ptr_flt_time_buf, pstr_qmf_bank->ptr_flt_work_buf,
+diff --git a/encoder/ixheaace_sbr_qmf_enc.h b/encoder/ixheaace_sbr_qmf_enc.h
+index a7d4f48..63e8f71 100644
+--- a/encoder/ixheaace_sbr_qmf_enc.h
++++ b/encoder/ixheaace_sbr_qmf_enc.h
+@@ -75,7 +75,8 @@ VOID ixheaace_get_energy_from_cplx_qmf(
+ 
+ VOID ixheaace_enc_synthesis_qmf_filtering(FLOAT32 **ptr_sbr_re, FLOAT32 **ptr_sbr_im,
+                                           FLOAT32 *time_float,
+-                                          ixheaace_pstr_sbr_qmf_filter_bank pstr_qmf_bank);
++                                          ixheaace_pstr_sbr_qmf_filter_bank pstr_qmf_bank,
++                                          WORD32 num_time_slots);
+ 
+ VOID ixheaace_create_synthesis_qmf_bank(
+     ixheaace_pstr_sbr_qmf_filter_bank pstr_sbr_qmf_filter_bank, WORD32 *ptr_common_buffer,

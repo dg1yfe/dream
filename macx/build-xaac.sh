@@ -1,6 +1,10 @@
 #!/bin/sh
 # Build Google/Ittiam libxaac's AAC encoder (AAC-LC, HE-AAC v1/v2, also LD/ELD/USAC)
-# for DREAM on macOS. SPIKE ONLY: DREAM does not use it yet (docs/research/xaac-spike.md).
+# for DREAM on macOS. SPIKE ONLY: DREAM does not use it yet (docs/research/xaac-spike.md,
+# docs/research/xaac960.md).
+#
+# The pinned tree is patched with macx/patches/libxaac-*.patch (applied in name order) to
+# make HE-AAC v1/v2 work with 960-sample frames and a 12 kHz core, as DRM needs.
 #
 # Produces  $PREFIX/lib/libxaacenc.dylib   (install_name @rpath/libxaacenc.dylib)
 #           $PREFIX/include/xaacenc/{ixheaace_api.h,ixheaac_type_def.h,ixheaac_error_standards.h}
@@ -20,6 +24,7 @@
 #   ARCH    env, default: uname -m (arm64 or x86_64)
 #   XAAC_EXTRA_CFLAGS env, e.g. "-O1 -g -fsanitize=address,undefined" for a scratch build
 #   XAAC_BUILD env, build dir override (use with a scratch PREFIX for sanitizer builds)
+#   XAAC_SRC env, source checkout override (default <repo>/.deps/src/libxaac)
 #   MACOSX_DEPLOYMENT_TARGET env, default 11.0
 set -eu
 
@@ -31,7 +36,7 @@ XAAC_URL=https://android.googlesource.com/platform/external/libxaac
 REPO=$(cd "$(dirname "$0")/.." && pwd)
 ARCH=${ARCH:-$(uname -m)}
 PREFIX=${1:-$REPO/.deps/$ARCH}
-SRC=$REPO/.deps/src/libxaac
+SRC=${XAAC_SRC:-$REPO/.deps/src/libxaac}
 BUILD=${XAAC_BUILD:-$REPO/.deps/build/libxaac-enc-$ARCH}
 export MACOSX_DEPLOYMENT_TARGET=${MACOSX_DEPLOYMENT_TARGET:-11.0}
 CC=${CC:-clang}
@@ -55,6 +60,14 @@ if [ "$tree" != "$XAAC_TREE" ]; then
 fi
 git -C "$SRC" checkout --quiet -- .
 git -C "$SRC" clean --quiet -fdx
+
+# 1b. DREAM patches (960-sample HE-AAC/HE-AACv2, 12 kHz core); recorded in the stamp
+PATCHES=$(ls "$REPO"/macx/patches/libxaac-*.patch 2>/dev/null || true)
+for p in $PATCHES; do
+    git -C "$SRC" apply --whitespace=nowarn "$p" || {
+        echo "error: $p does not apply to $XAAC_TAG" >&2; exit 1; }
+done
+PATCH_SUM=$(cat $PATCHES /dev/null | shasum -a 256 | cut -c1-16)
 
 # 2. source list = LIBXAACENC_SRCS (+drc) + LIBXAAC_COMMON_SRCS of the cmake files
 SOURCES=$(sed -n 's/^ *"\${XAAC_ROOT}\/\(.*\.c\)".*/\1/p' \
@@ -92,7 +105,7 @@ $CC -arch "$ARCH" -dynamiclib $objs -lm $EXTRA \
     -o "$PREFIX/lib/libxaacenc.dylib"
 cp "$SRC/encoder/ixheaace_api.h" "$SRC/common/ixheaac_type_def.h" \
    "$SRC/common/ixheaac_error_standards.h" "$PREFIX/include/xaacenc/"
-printf '%s %s\n' "$XAAC_TAG" "$XAAC_COMMIT" > "$PREFIX/lib/libxaacenc.dream-stamp"
+printf '%s %s patches %s\n' "$XAAC_TAG" "$XAAC_COMMIT" "$PATCH_SUM" > "$PREFIX/lib/libxaacenc.dream-stamp"
 
 # 4. upstream test-bench encoder (handy for experiments), linked statically
 TB="test/encoder/ixheaace_testbench.c test/encoder/ixheaace_error.c test/encoder/impd_drc_user_config.c"
