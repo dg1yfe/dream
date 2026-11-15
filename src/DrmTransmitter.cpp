@@ -470,6 +470,24 @@ void CDRMTransmitter::LoadSettings() {
                                       ? CAudioParam::SB_USED
                                       : CAudioParam::SB_NOT_USED;
 
+    /* Only fdk-aac (patched, loaded at run time) encodes SBR and parametric
+       stereo; with faac fall back explicitly instead of silently */
+    if (Service.AudioParam.eAudioCoding == CAudioParam::AC_AAC) {
+      const string enc = CAudioCodec::EncoderVersion(CAudioParam::AC_AAC);
+      if (Service.AudioParam.eSBRFlag == CAudioParam::SB_USED
+          && !CAudioCodec::EncoderCanSBR(CAudioParam::AC_AAC)) {
+        cerr << "warning: AAC encoder \"" << enc << "\" has no SBR (HE-AAC), "
+             << "using AAC-LC without SBR (needs the patched fdk-aac)" << endl;
+        Service.AudioParam.eSBRFlag = CAudioParam::SB_NOT_USED;
+      }
+      if (Service.AudioParam.eAudioMode == CAudioParam::AM_P_STEREO
+          && !CAudioCodec::EncoderCanPS(CAudioParam::AC_AAC)) {
+        cerr << "warning: AAC encoder \"" << enc << "\" has no parametric stereo, "
+             << "using plain stereo (needs the patched fdk-aac)" << endl;
+        Service.AudioParam.eAudioMode = CAudioParam::AM_STEREO;
+      }
+    }
+
     /* Opus Codec Channels */
     value = s.Get(service, "Opus_Channels", string("OC_STEREO"));
     if (value == "OC_MONO") {

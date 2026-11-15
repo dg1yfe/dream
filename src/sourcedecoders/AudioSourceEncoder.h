@@ -100,8 +100,23 @@ protected:
 	int						iNumBorders;
 	int						iAudioPayloadLen;
 	int						iNumHigherProtectedBytes;
+	/* Rate control for encoders without exact frame sizes (faac): the
+	   bitrate is lowered on super frame overflow and raised again slowly */
+	bool					bRateControl;
 	int						iEncBitRate;		/* bitrate currently set in the encoder */
+	int						iEncBitRateNom;		/* nominal rate (fills the payload) */
 	int						iEncBitRateMin;		/* lower limit for overflow back-off */
+	int						iEncBitRateCeil;	/* current upper limit (hysteresis) */
+	int						iCleanSuperFrames;	/* consecutive super frames without overflow */
+	int						iCeilCleanSuperFrames;
+	_REAL					rPeakFill;			/* max fill since the last step */
+	_REAL					rCeilPeakFill;		/* max fill since the last ceiling step */
+	long					lRcSuperFrames, lRcOverflows;
+	double					dRcRateSum;
+
+	void InitRateControl(int iNominalBitRate);
+	void UpdateRateControl(int iRequestedBytes, bool bDropped);
+	void PrintRateControlStats();
 
 #ifdef HAVE_SPEEX
     SpeexResampler			ResampleObj[MAX_ENCODED_CHANNELS];

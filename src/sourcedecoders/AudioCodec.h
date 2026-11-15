@@ -67,6 +67,14 @@ public:
 	virtual void EncClose() = 0;
 	virtual void EncSetBitrate(int iBitRate) = 0;
 	virtual void EncUpdate(CAudioParam& AudioParam) = 0;
+	/* Encoder tools beyond the core codec (AAC: SBR = HE-AAC, parametric
+	   stereo = HE-AAC v2). Codecs that have them must override these. */
+	virtual bool CanEncodeSBR(CAudioParam::EAudCod eAudioCoding);
+	virtual bool CanEncodePS(CAudioParam::EAudCod eAudioCoding);
+	/* Ask the encoder GetEncoder() would choose */
+	static bool EncoderCanSBR(CAudioParam::EAudCod eAudioCoding);
+	static bool EncoderCanPS(CAudioParam::EAudCod eAudioCoding);
+	static std::string EncoderVersion(CAudioParam::EAudCod eAudioCoding);
 	/* Common */
 	static void InitCodecList();
 	static void UnrefCodecList();

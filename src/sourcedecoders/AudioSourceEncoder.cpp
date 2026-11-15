@@ -70,7 +70,10 @@ static void SetEncodedAudioMode(CAudioParam& AudioParam, int iNumChannels,
 /* Implementation *************************************************************/
 
 CAudioSourceEncoderImplementation::CAudioSourceEncoderImplementation()
-    : bUsingTextMessage(false), codec(nullptr), iEncBitRate(0), iEncBitRateMin(0)
+    : bUsingTextMessage(false), codec(nullptr), bRateControl(false),
+      iEncBitRate(0), iEncBitRateNom(0), iEncBitRateMin(0), iEncBitRateCeil(0),
+      iCleanSuperFrames(0), iCeilCleanSuperFrames(0), rPeakFill(0), rCeilPeakFill(0),
+      lRcSuperFrames(0), lRcOverflows(0), dRcRateSum(0)
 {
     /* Initialize Audio Codec List */
     CAudioCodec::InitCodecList();
@@ -86,6 +89,8 @@ CAudioSourceEncoderImplementation::CAudioSourceEncoderImplementation()
 
 CAudioSourceEncoderImplementation::~CAudioSourceEncoderImplementation()
 {
+    PrintRateControlStats();
+
     /* Unreference Audio Codec List */
     CAudioCodec::UnrefCodecList();
 }
@@ -199,14 +204,17 @@ CAudioSourceEncoderImplementation::ProcessDataInternal(CParameter& Parameters,
            frame should be at least iNumHigherProtectedBytes long (the
            receiver fills the higher protected part of every frame). Frames
            that do not fit are dropped (zero bytes with a wrong CRC, the
-           decoder conceals them) instead of being truncated. On overflow the
-           encoder bitrate is reduced by 10 % (down to half the initial rate)
-           to give encoders without strict rate control some headroom. */
+           decoder conceals them) instead of being truncated. Encoders without
+           exact frame sizes (faac) are kept below the payload by
+           UpdateRateControl(). */
         if (bDrmSf)
         {
             const int iMinLen = std::min(iNumHigherProtectedBytes, int(lMaxBytesEncOut));
             int iUsed = 0;
+            int iRequested = 0;
             bool bDropped = false;
+            for (int j = 0; j < iNumAudioFrames; j++)
+                iRequested += veciFrameLength[j];
             for (int j = 0; j < iNumAudioFrames; j++)
             {
                 const int iRest = iNumAudioFrames - 1 - j; /* frames after j */
@@ -226,12 +234,7 @@ CAudioSourceEncoderImplementation::ProcessDataInternal(CParameter& Parameters,
                 }
                 iUsed += veciFrameLength[j];
             }
-            if (bDropped && iEncBitRate > iEncBitRateMin)
-            {
-                iEncBitRate = std::max(iEncBitRateMin, iEncBitRate * 9 / 10);
-                codec->EncSetBitrate(iEncBitRate);
-                std::cerr << "audio super frame overflow, encoder bitrate reduced to " << iEncBitRate << std::endl;
-            }
+            UpdateRateControl(iRequested, bDropped);
         }
 
         /* Write data to output vector */
@@ -446,16 +449,30 @@ CAudioSourceEncoderImplementation::InitInternalTx(CParameter & Parameters,
 
             const int iActEncOutBytes = iAudioPayloadLen / iNumAudioFrames;
 
+            /* Requested tools the encoder does not have fall back explicitly
+               (SetEncodedAudioMode() signals what is really transmitted) */
+            CAudioParam& AudioParam = Parameters.Service[iCurSelServ].AudioParam;
+            if (AudioParam.eSBRFlag == CAudioParam::SB_USED && !codec->CanEncodeSBR(eAudioCoding))
+            {
+                std::cerr << "warning: AAC encoder \"" << codec->EncGetVersion()
+                          << "\" has no SBR (HE-AAC): transmitting AAC-LC without SBR" << std::endl;
+                AudioParam.eSBRFlag = CAudioParam::SB_NOT_USED;
+            }
+            if (AudioParam.eAudioMode == CAudioParam::AM_P_STEREO && !codec->CanEncodePS(eAudioCoding))
+            {
+                std::cerr << "warning: AAC encoder \"" << codec->EncGetVersion()
+                          << "\" has no parametric stereo: transmitting plain stereo" << std::endl;
+                AudioParam.eAudioMode = CAudioParam::AM_STEREO;
+            }
+
             /* Open encoder instance */
-            codec->EncOpen(Parameters.Service[iCurSelServ].AudioParam, lNumSampEncIn, lMaxBytesEncOut);
+            codec->EncOpen(AudioParam, lNumSampEncIn, lMaxBytesEncOut);
             lNumSampEncIn /= unsigned(iNumChannels);
 
             /* Calculate bitrate, bit per second (one frame each
                iTimeEachAudBloMS, with or without SBR) */
             const int iBitRate = iActEncOutBytes * SIZEOF__BYTE * 1000 / iTimeEachAudBloMS;
-            codec->EncSetBitrate(iBitRate);
-            iEncBitRate = iBitRate;
-            iEncBitRateMin = iBitRate / 2;
+            InitRateControl(iBitRate);
         }
             break;
 
@@ -647,9 +664,7 @@ CAudioSourceEncoderImplementation::InitInternalRx(CParameter& Parameters,
         /* Calculate bitrate, bit per second (one frame each
            iTimeEachAudBloMS, with or without SBR) */
         const int iBitRate = iActEncOutBytes * SIZEOF__BYTE * 1000 / iTimeEachAudBloMS;
-        codec->EncSetBitrate(iBitRate);
-        iEncBitRate = iBitRate;
-        iEncBitRateMin = iBitRate / 2;
+        InitRateControl(iBitRate);
     }
         break;
     case CAudioParam::AC_MPEGAAC:
@@ -763,8 +778,123 @@ CAudioSourceEncoderImplementation::InitInternalRx(CParameter& Parameters,
 void
 CAudioSourceEncoderImplementation::CloseEncoder()
 {
+    PrintRateControlStats();
+    bRateControl = false;
     if (codec != nullptr)
         codec->EncClose();
+}
+
+void
+CAudioSourceEncoderImplementation::PrintRateControlStats()
+{
+    if (lRcSuperFrames > 0)
+    {
+        std::cerr << "audio rate control: " << lRcSuperFrames << " super frames, "
+                  << lRcOverflows << " overflows, mean bitrate "
+                  << int(dRcRateSum / lRcSuperFrames) << " of " << iEncBitRateNom
+                  << ", final " << iEncBitRate << std::endl;
+        lRcSuperFrames = 0;
+    }
+}
+
+/* Rate control tuning, measured with faac 1.28 (DRM) at 12-20 kbit/s.
+   One super frame = 400 ms. Rates in percent/permille of the nominal rate. */
+static const int RC_START_PERCENT = 90;       /* initial safety margin */
+static const int RC_DOWN_PERCENT = 90;        /* cut on overflow */
+static const int RC_CEIL_PERCENT = 90;        /* ceiling after overflow, of the rate that overflowed */
+static const int RC_UP_STEP_PERMILLE = 10;    /* step up */
+static const int RC_UP_SUPER_FRAMES = 5;      /* clean super frames per step up */
+static const _REAL RC_UP_MAX_FILL = (_REAL) 0.95; /* step up only below this fill */
+static const int RC_CEIL_SUPER_FRAMES = 150;  /* clean super frames per +1 % ceiling (60 s) */
+static const int RC_CEIL_FAST_SUPER_FRAMES = 25; /* ... (10 s) if the fill stayed low */
+static const _REAL RC_CEIL_FAST_MAX_FILL = (_REAL) 0.85;
+
+void
+CAudioSourceEncoderImplementation::InitRateControl(int iNominalBitRate)
+{
+    iEncBitRateNom = iNominalBitRate;
+    iEncBitRateMin = iNominalBitRate / 2;
+    iEncBitRateCeil = iNominalBitRate;
+    iCleanSuperFrames = iCeilCleanSuperFrames = 0;
+    rPeakFill = rCeilPeakFill = 0;
+    lRcSuperFrames = lRcOverflows = 0;
+    dRcRateSum = 0;
+#ifdef HAVE_LIBFDK_AAC
+    /* fdk-aac (DRM) gets the exact size of every frame and never overflows */
+    bRateControl = dynamic_cast<FdkAacCodec*>(codec) == nullptr;
+#else
+    bRateControl = true;
+#endif
+    iEncBitRate = bRateControl ? iNominalBitRate * RC_START_PERCENT / 100 : iNominalBitRate;
+    codec->EncSetBitrate(iEncBitRate);
+    if (bRateControl)
+        std::cerr << "audio encoder rate control: nominal " << iEncBitRateNom
+                  << " bit/s, start " << iEncBitRate << " bit/s" << std::endl;
+}
+
+/* Encoders without exact frame sizes (faac) overshoot now and then. Each
+   overflow drops a frame, so the rate is cut by 10 % at once and capped
+   (ceiling) at that level. The ceiling rises again by 1 % of the nominal rate
+   per minute without overflow (every 10 s while the fill stays below 85 %),
+   and the rate follows it in small steps while the super frames leave some
+   headroom, up to the nominal rate. Unlike the old one-way back-off, a burst
+   of overflows (e.g. at start-up) no longer costs bitrate for the rest of the
+   session. */
+void
+CAudioSourceEncoderImplementation::UpdateRateControl(int iRequestedBytes, bool bDropped)
+{
+    if (!bRateControl || iEncBitRateNom <= 0 || iAudioPayloadLen <= 0)
+        return;
+
+    lRcSuperFrames++;
+    dRcRateSum += iEncBitRate;
+
+    const _REAL rFill = _REAL(iRequestedBytes) / _REAL(iAudioPayloadLen);
+    int iNewBitRate = iEncBitRate;
+    const char* reason = "";
+
+    if (bDropped)
+    {
+        lRcOverflows++;
+        iEncBitRateCeil = std::max(iEncBitRateMin, iEncBitRate * RC_CEIL_PERCENT / 100);
+        iNewBitRate = std::max(iEncBitRateMin, iEncBitRate * RC_DOWN_PERCENT / 100);
+        iCleanSuperFrames = iCeilCleanSuperFrames = 0;
+        rPeakFill = rCeilPeakFill = 0;
+        reason = "super frame overflow";
+    }
+    else
+    {
+        rPeakFill = std::max(rPeakFill, rFill);
+        rCeilPeakFill = std::max(rCeilPeakFill, rFill);
+        ++iCeilCleanSuperFrames;
+        if (iCeilCleanSuperFrames >= RC_CEIL_SUPER_FRAMES
+                || (iCeilCleanSuperFrames >= RC_CEIL_FAST_SUPER_FRAMES && rCeilPeakFill < RC_CEIL_FAST_MAX_FILL))
+        {
+            iEncBitRateCeil = std::min(iEncBitRateNom, iEncBitRateCeil + iEncBitRateNom / 100);
+            iCeilCleanSuperFrames = 0;
+            rCeilPeakFill = 0;
+        }
+        if (++iCleanSuperFrames >= RC_UP_SUPER_FRAMES)
+        {
+            if (rPeakFill < RC_UP_MAX_FILL && iEncBitRate < iEncBitRateCeil)
+            {
+                iNewBitRate = std::min(iEncBitRateCeil,
+                                       iEncBitRate + iEncBitRateNom * RC_UP_STEP_PERMILLE / 1000);
+                reason = "headroom";
+            }
+            iCleanSuperFrames = 0;
+            rPeakFill = 0;
+        }
+    }
+
+    if (iNewBitRate != iEncBitRate)
+    {
+        std::cerr << "audio encoder bitrate " << (iNewBitRate < iEncBitRate ? "reduced" : "raised")
+                  << " to " << iNewBitRate << " (" << reason << ", fill "
+                  << int(rFill * 100 + 0.5) << " %)" << std::endl;
+        iEncBitRate = iNewBitRate;
+        codec->EncSetBitrate(iEncBitRate);
+    }
 }
 
 void

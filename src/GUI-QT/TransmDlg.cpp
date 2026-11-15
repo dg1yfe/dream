@@ -328,6 +328,13 @@ TransmDialog::TransmDialog(CTx& ntx, QWidget* parent)
 		RadioButtonAAC->setEnabled(false);
 		//RadioButtonAAC->hide();
 	}
+    else {
+		/* faac: AAC-LC only, fdk-aac (patched): also SBR and parametric stereo */
+		RadioButtonAAC->setToolTip(QString::fromStdString(CAudioCodec::EncoderVersion(CAudioParam::AC_AAC))
+			+ (CAudioCodec::EncoderCanSBR(CAudioParam::AC_AAC)
+				? tr(" (AAC-LC, SBR, parametric stereo)")
+				: tr(" (AAC-LC only: no SBR / parametric stereo)")));
+	}
     if (!tx.CanEncode(CAudioParam::AC_OPUS)) {
 		RadioButtonOPUS->setText(tr("No Opus Codec"));
 		RadioButtonOPUS->setToolTip(tr("see http://drm.sourceforge.net"));

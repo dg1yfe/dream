@@ -56,12 +56,29 @@ AACCodecParams::AACCodecParams(CSettings& Settings, CParameter& Parameters,
 	if (s.iXPos && s.iYPos)
 		move(s.iXPos, s.iYPos);
 
-    QString strWebSite("https://www.iis.fraunhofer.de/en/ff/amm/prod/audiocodec/audiocodecs/heaac.html");
-    LabelInfoDescription->setText(tr("HE-AAC"));
-    LabelInfoVersion->setText("2.0.0");
+    /* What the active AAC encoder can do: SBR and parametric stereo need the
+       (patched) fdk-aac, faac only does AAC-LC */
+    const bool bCanSBR = CAudioCodec::EncoderCanSBR(CAudioParam::AC_AAC);
+    const bool bCanPS = CAudioCodec::EncoderCanPS(CAudioParam::AC_AAC);
+    QString strWebSite(bCanSBR
+        ? "https://www.iis.fraunhofer.de/en/ff/amm/prod/audiocodec/audiocodecs/heaac.html"
+        : "https://github.com/knik0/faac");
+    LabelInfoDescription->setText(bCanSBR ? tr("HE-AAC") : tr("AAC-LC"));
+    LabelInfoVersion->setText(QString::fromStdString(CAudioCodec::EncoderVersion(CAudioParam::AC_AAC)));
 	LabelInfoWebSite->setText(Linkify(strWebSite));
 
 	Parameters.Lock();
+    /* Unsupported tools fall back explicitly */
+    if (!bCanSBR && Parameters.Service[iShortID].AudioParam.eSBRFlag == CAudioParam::SB_USED)
+    {
+        Parameters.Service[iShortID].AudioParam.eSBRFlag = CAudioParam::SB_NOT_USED;
+        Parameters.Service[iShortID].AudioParam.bParamChanged = true;
+    }
+    if (!bCanPS && Parameters.Service[iShortID].AudioParam.eAudioMode == CAudioParam::AM_P_STEREO)
+    {
+        Parameters.Service[iShortID].AudioParam.eAudioMode = CAudioParam::AM_STEREO;
+        Parameters.Service[iShortID].AudioParam.bParamChanged = true;
+    }
 	/* Channels */
     switch (Parameters.Service[iShortID].AudioParam.eAudioMode)
 	{
@@ -90,6 +107,18 @@ AACCodecParams::AACCodecParams(CSettings& Settings, CParameter& Parameters,
     /* options */
     CheckBoxSBR->setCheckState(Parameters.Service[iShortID].AudioParam.eSBRFlag?Qt::Checked:Qt::Unchecked);
 	Parameters.Unlock();
+    if (!bCanSBR)
+    {
+        CheckBoxSBR->setEnabled(false);
+        CheckBoxSBR->setToolTip(tr("Not available: the AAC encoder in use (faac) has no SBR "
+                                   "(HE-AAC). SBR needs the patched fdk-aac library."));
+    }
+    if (!bCanPS)
+    {
+        RadioButtonChannelsParametricStereo->setEnabled(false);
+        RadioButtonChannelsParametricStereo->setToolTip(tr("Not available: the AAC encoder in use "
+                                   "(faac) has no parametric stereo. It needs the patched fdk-aac library."));
+    }
 
 	/* Connections */
     connect(ButtonGroupChannels, SIGNAL_BUTTONGROUP_CLICKED_INT, this, SLOT(OnButtonGroupChannels(int)));

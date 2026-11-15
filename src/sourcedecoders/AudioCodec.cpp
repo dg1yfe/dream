@@ -32,9 +32,9 @@
 #include "opus_codec.h"
 #ifdef HAVE_LIBFDK_AAC
 # include "fdk_aac_codec.h"
+#endif
 #include <iostream>
 using namespace std;
-#endif
 
 CAudioCodec::CAudioCodec():pFile(nullptr)
 {
@@ -61,8 +61,21 @@ CAudioCodec::InitCodecList()
 
 		/* AAC */
 #ifdef HAVE_LIBFDK_AAC
-cerr<<"Adding FDK codec"<<endl;
-        CodecList.push_back(new FdkAacCodec);
+        /* fdk-aac is loaded at run time: only use it if it is there */
+        FdkAacCodec* fdk = new FdkAacCodec;
+        const bool bFdkDec = fdk->CanDecode(CAudioParam::AC_AAC);
+        const bool bFdkEnc = fdk->CanEncode(CAudioParam::AC_AAC);
+        if (bFdkDec || bFdkEnc || fdk->CanEncode(CAudioParam::AC_MPEGAAC))
+        {
+            cerr << "Adding FDK codec (DRM decoder: " << (bFdkDec ? "yes" : "no")
+                 << ", DRM encoder: " << (bFdkEnc ? "yes" : "no") << ")" << endl;
+            CodecList.push_back(fdk);
+        }
+        else
+        {
+            cerr << "FDK codec not usable, not added" << endl;
+            delete fdk;
+        }
 #endif
         CodecList.push_back(new AacCodec);
 
@@ -106,6 +119,49 @@ CAudioCodec::GetEncoder(CAudioParam::EAudCod eAudioCoding, bool bCanReturnNullPt
 			return CodecList[i];
 	/* Fallback to null codec */
     return bCanReturnNullPtr ? nullptr : CodecList[0]; // ie the null codec
+}
+
+bool
+CAudioCodec::CanEncodeSBR(CAudioParam::EAudCod eAudioCoding)
+{
+#ifdef HAVE_LIBFDK_AAC
+    /* TODO: move into FdkAacCodec (override returning CanEncode()), then
+       drop this. The patched fdk-aac DRM encoder does AAC+SBR(+PS). */
+    if (dynamic_cast<FdkAacCodec*>(this) != nullptr)
+        return CanEncode(eAudioCoding)
+            && (eAudioCoding != CAudioParam::AC_AAC || FdkAacCodec::HasDrmEncoder());
+#else
+    (void)eAudioCoding;
+#endif
+    return false;
+}
+
+bool
+CAudioCodec::CanEncodePS(CAudioParam::EAudCod eAudioCoding)
+{
+    /* parametric stereo needs SBR; so far every SBR encoder also does PS */
+    return CanEncodeSBR(eAudioCoding);
+}
+
+bool
+CAudioCodec::EncoderCanSBR(CAudioParam::EAudCod eAudioCoding)
+{
+    CAudioCodec* codec = GetEncoder(eAudioCoding, true);
+    return codec != nullptr && codec->CanEncodeSBR(eAudioCoding);
+}
+
+bool
+CAudioCodec::EncoderCanPS(CAudioParam::EAudCod eAudioCoding)
+{
+    CAudioCodec* codec = GetEncoder(eAudioCoding, true);
+    return codec != nullptr && codec->CanEncodePS(eAudioCoding);
+}
+
+string
+CAudioCodec::EncoderVersion(CAudioParam::EAudCod eAudioCoding)
+{
+    CAudioCodec* codec = GetEncoder(eAudioCoding, true);
+    return codec != nullptr ? codec->EncGetVersion() : string();
 }
 
 void
