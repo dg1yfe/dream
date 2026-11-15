@@ -71,14 +71,16 @@ CI jobs.
 ### macOS (Apple Silicon or Intel, Homebrew)
 
     brew install cmake ninja pkgconf qtbase qtsvg qwt \
-                 fftw speexdsp portaudio libsndfile opus hamlib gpsd soapysdr faad2
+                 fftw speexdsp portaudio libsndfile opus hamlib gpsd soapysdr
     macx/build.sh                # -> build/gui/Dream.app
     open build/gui/Dream.app
 
 `macx/build.sh` fetches and builds the two codecs Homebrew does not provide into
-`.deps/<arch>` (once, rebuilt when a patch changes): **fdk-aac 2.0.3** with
+`.deps/<arch>` (once, rebuilt when a patch changes; network needed on first run): **fdk-aac 2.0.3** with
 `macx/patches/fdk-aac-2.0.3-drm-encoder.patch` (AAC/HE-AAC/xHE-AAC decoder and the
-DRM AAC/HE-AAC encoder) and **libfaac_drm** (fallback DRM AAC encoder, `macx/build-faac-drm.sh`).
+DRM AAC/HE-AAC encoder), **libfaac_drm** (fallback DRM AAC encoder, `macx/build-faac-drm.sh`)
+and a patched **libfaad_drm** (faad2 2.11.4 with DRM HCR/MPEG-PS fixes, fallback DRM AAC
+decoder, `macx/build-faad-drm.sh`). Dev builds find them via the compiled-in `DREAM_DEPS_LIBDIR`.
 Other options: `--console` (no-Qt binary in `build/console/dream`), `--brew`
 (install missing Homebrew packages), `--deploy` (self-contained, ad-hoc signed
 `Dream.app` + `Dream.dmg` via `macx/deploy.sh`; add `--with-fdk` to also bundle

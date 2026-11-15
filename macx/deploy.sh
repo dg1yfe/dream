@@ -39,7 +39,13 @@ mkdir -p "$app/Contents/Frameworks"
 
 # Libraries DREAM dlopen()s by leaf name (not seen by macdeployqt): the DRM AAC
 # decoder/encoder fallbacks. They are found via the executable's LC_RPATH.
-libs="$PREFIX/lib/libfaac_drm.dylib $BREW_PREFIX/lib/libfaad_drm.dylib"
+# libfaad_drm: the patched faad2 from macx/build-faad-drm.sh (exports NeAACDecDreamDrmFixes),
+# not Homebrew's stock build.
+faad=$PREFIX/lib/libfaad_drm.dylib
+[ -e "$faad" ] || { echo "error: $faad not found (macx/build.sh --deps-only)" >&2; exit 1; }
+nm -gU "$faad" | grep -q " _NeAACDecDreamDrmFixes\$" ||
+    { echo "error: $faad is not the DREAM-patched faad2 (no NeAACDecDreamDrmFixes)" >&2; exit 1; }
+libs="$PREFIX/lib/libfaac_drm.dylib $faad"
 if [ $with_fdk = 1 ]; then
     [ -e "$PREFIX/lib/libfdk-aac.2.dylib" ] ||
         { echo "error: $PREFIX/lib/libfdk-aac.2.dylib not found (macx/build.sh --deps-only)" >&2; exit 1; }

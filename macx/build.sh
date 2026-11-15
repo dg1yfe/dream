@@ -16,6 +16,7 @@
 #   fdk-aac 2.0.3 + macx/patches/fdk-aac-2.0.3-drm-encoder.patch – AAC/HE-AAC/xHE-AAC decoder
 #                   and DRM AAC/HE-AAC encoder (Homebrew formula disabled 2026-09)
 #   libfaac_drm   – fallback DRM AAC encoder (macx/build-faac-drm.sh), dlopen()ed
+#   libfaad_drm   – patched faad2 2.11.4, fallback DRM AAC decoder (macx/build-faad-drm.sh), dlopen()ed
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -49,7 +50,7 @@ BREW_PREFIX=$(brew --prefix)
 
 # ---------------------------------------------------------------- Homebrew deps
 BREW_TOOLS="cmake ninja pkgconf"
-BREW_LIBS="fftw speexdsp portaudio libsndfile opus hamlib gpsd soapysdr faad2"
+BREW_LIBS="fftw speexdsp portaudio libsndfile opus hamlib gpsd soapysdr"
 BREW_QT="qtbase qtsvg qwt"
 want="$BREW_TOOLS $BREW_LIBS"
 [ $console = 1 ] || want="$want $BREW_QT"
@@ -130,6 +131,21 @@ if [ -x "$REPO/macx/build-faac-drm.sh" ]; then
         echo "== building libfaac_drm into $PREFIX"
         ARCH=$ARCH MACOSX_DEPLOYMENT_TARGET=$DEPS_DEPLOYMENT_TARGET "$REPO/macx/build-faac-drm.sh" "$PREFIX"
         echo "$faac_want" > "$FAAC_STAMP"
+    fi
+fi
+
+# libfaad_drm.dylib: faad2 2.11.4 + macx/patches/faad2-2.11.4-*.patch (DRM HCR short-block
+# order, MPEG-4 PS, marker NeAACDecDreamDrmFixes). dlopen()ed DRM AAC decoder used when
+# fdk-aac is absent. Rebuilt when the script or its patches change.
+if [ -x "$REPO/macx/build-faad-drm.sh" ]; then
+    FAAD_STAMP=$PREFIX/lib/libfaad_drm.dream-stamp
+    faad_want=$(cat "$REPO/macx/build-faad-drm.sh" "$REPO"/macx/patches/faad2-*.patch 2>/dev/null |
+                shasum -a 256 | cut -d' ' -f1)
+    faad_have=$(cat "$FAAD_STAMP" 2>/dev/null || echo missing)
+    if [ ! -f "$PREFIX/lib/libfaad_drm.dylib" ] || [ "$faad_have" != "$faad_want" ]; then
+        echo "== building libfaad_drm (patched faad2) into $PREFIX"
+        ARCH=$ARCH MACOSX_DEPLOYMENT_TARGET=$DEPS_DEPLOYMENT_TARGET "$REPO/macx/build-faad-drm.sh" "$PREFIX"
+        echo "$faad_want" > "$FAAD_STAMP"
     fi
 fi
 

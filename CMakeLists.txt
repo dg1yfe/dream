@@ -75,8 +75,12 @@ endif()
 # Directories searched at runtime: also used by dlopen() of leaf names
 # (libfaad_drm / libfaac_drm / libopus) because dyld consults LC_RPATH for them.
 set(DREAM_EXTRA_RPATHS "")
-if(APPLE AND IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}/lib")
-    list(APPEND DREAM_EXTRA_RPATHS "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}/lib")
+set(DREAM_DEPS_LIBDIR "")
+if(IS_DIRECTORY "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}/lib")
+    set(DREAM_DEPS_LIBDIR "${CMAKE_SOURCE_DIR}/.deps/${_dream_arch}/lib")
+    if(APPLE)
+        list(APPEND DREAM_EXTRA_RPATHS "${DREAM_DEPS_LIBDIR}")
+    endif()
 endif()
 
 if(APPLE)
@@ -191,6 +195,11 @@ endif()
 function(dream_setup_common target)
     target_include_directories(${target} PRIVATE "${CMAKE_SOURCE_DIR}" "${DREAM_SRC}")
     target_compile_definitions(${target} PRIVATE EXECUTABLE_NAME=dream)
+    if(DREAM_DEPS_LIBDIR)
+        # dev runs: CLibraryLoader also searches the locally built codec libs
+        # (patched libfaad_drm, libfaac_drm, libfdk-aac) - see src/util/LibraryLoader.h
+        target_compile_definitions(${target} PRIVATE "DREAM_DEPS_LIBDIR=\"${DREAM_DEPS_LIBDIR}\"")
+    endif()
 
     if(UNIX)
         target_compile_definitions(${target} PRIVATE

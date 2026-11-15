@@ -12,6 +12,15 @@
 #   LOOPBACK_SECONDS      signal length per case (default 12)
 #   LOOPBACK_WORKDIR      keep all files there (default: fresh temp dir)
 #   LOOPBACK_CASES        regex selecting cases by name (default: all)
+#   DREAM_NO_FDK=1        run without fdk-aac (or DREAM_NO_FDK_ENCODER=1 globally):
+#                         the fdk-* cases are then SKIPPED
+#                         (they would silently be encoded by faac instead)
+#
+# Codec provenance is checked from the logs, so a silent fallback cannot pass:
+#   fdk-*   tx.log must say "FDK library loaded: ... (DRM encoder: yes)", else FAIL
+#           (SKIP when DREAM_NO_FDK=1 is set on purpose)
+#   faac-*  tx.log must say "Got FAAC library", else FAIL
+# The decoder actually used (fdk / patched faad2 / stock faad2) is shown per case.
 #
 # Always runs the tone test (620 Hz left, 1130 Hz right). Without an audio
 # file, a speech clip from macOS 'say' is used as second source if available.
@@ -103,7 +112,19 @@ opus-mono          |                       | --codec Opus --opuschannels OC_MONO
 opus-stereo        |                       | --codec Opus --opuschannels OC_STEREO     | stereo
 '
 
-pass=0; fail=0; RESULTS=""
+nofdk=0
+case "${DREAM_NO_FDK:-0}${DREAM_NO_FDK_ENCODER:-0}" in 00|0|'') ;; *) nofdk=1 ;; esac
+
+# which AAC decoder the receiver could use, from rx.log
+decoder_of() {
+    local log=$1
+    if grep -q "FDK library loaded:" "$log"; then echo "dec=fdk"
+    elif grep -q "Warning: stock FAAD2" "$log"; then echo "dec=faad2-STOCK"
+    elif grep -q "Got FAAD2 library" "$log"; then echo "dec=faad2-patched"
+    else echo "dec=none"; fi
+}
+
+pass=0; fail=0; skip=0; RESULTS=""
 for src in $SOURCES; do
     label=${src%%:*}; wav=${src#*:}
     kind=signal; [ "$label" = tone ] && kind=tone
@@ -111,6 +132,11 @@ for src in $SOURCES; do
         name=$(echo $name); envs=$(echo $envs); expect=$(echo $expect)
         [ -z "$name" ] && continue
         echo "$name" | grep -Eq "$FILTER" || continue
+        if [ $nofdk = 1 ] && [ "${name#fdk-}" != "$name" ]; then
+            line=$(printf '%-7s %-19s %s' "$label" "$name" "SKIP *** fdk-aac disabled (DREAM_NO_FDK/DREAM_NO_FDK_ENCODER) - not tested ***")
+            echo "$line"; RESULTS="$RESULTS$line"$'\n'; skip=$((skip + 1))
+            continue
+        fi
         dir="$WORK/$label/$name"; mkdir -p "$dir"
         (
             cd "$dir" || exit 1
@@ -120,6 +146,19 @@ for src in $SOURCES; do
                 --duration "$(python3 -c "print($SECS - 0.5)")" > rx.log 2>&1
         )
         res=$(python3 -I "$CHECK" "$kind" "$expect" "$wav" "$dir/rx.wav" "$dir/rx.log" 2>&1)
+        # codec provenance: the encoder the case name promises must have been available
+        prov=""
+        case "$name" in
+            fdk-*) grep -q "FDK library loaded:.*(DRM encoder: yes)" "$dir/tx.log" ||
+                       prov="fdk-aac DRM encoder NOT loaded (tx.log) - faac fallback would have encoded this" ;;
+            faac-*) grep -q "Got FAAC library" "$dir/tx.log" ||
+                       prov="libfaac_drm NOT loaded (tx.log)" ;;
+        esac
+        if [ -n "$prov" ]; then
+            res="FAIL *** $prov *** (audio check: ${res%%,*})"
+        elif [ "${name#opus}" = "$name" ]; then
+            res="$res, $(decoder_of "$dir/rx.log")"
+        fi
         if [ "${res%% *}" = PASS ]; then pass=$((pass + 1)); else fail=$((fail + 1)); fi
         line=$(printf '%-7s %-19s %s' "$label" "$name" "$res")
         echo "$line"
@@ -128,5 +167,6 @@ for src in $SOURCES; do
 done
 
 echo
-echo "summary: $pass passed, $fail failed (files in $WORK)"
+echo "summary: $pass passed, $fail failed, $skip skipped (files in $WORK)"
+[ "$skip" -gt 0 ] && echo "*** $skip fdk-aac case(s) SKIPPED because DREAM_NO_FDK / DREAM_NO_FDK_ENCODER is set ***"
 [ "$fail" -eq 0 ]
