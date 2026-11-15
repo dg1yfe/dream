@@ -1,0 +1,711 @@
+DRM (ETSI ES 201 980) AAC encoder for fdk-aac 2.0.3 (mstorsjo/fdk-aac tag v2.0.3, 716f439).
+Apply in the fdk-aac source root:  patch -p1 < fdk-aac-2.0.3-drm-encoder.patch  (or git apply)
+
+Adds to the encoder: AACENC_TRANSMUX = TT_DRM, AACENC_GRANULE_LENGTH = 960, DRM AU syntax
+(ER-AAC-SCAL-like element order, VCB11, Huffman codeword reordering, aac_crc_bits CRC-8 as first
+byte), DRM SBR (scalable syntax + 8 bit DRM SBR CRC, written bit-reversed at the end of the AU),
+MPEG-4 PS via AOT_PS. Capability flags: AACENC CAPF_AAC_960|CAPF_AAC_DRM_BSFORMAT,
+TPENC CAPF_DRM, SBRENC CAPF_SBR_DRM_BS. Default (non-DRM) behaviour is unchanged.
+Fraunhofer FDK AAC license applies to the patched library (see NOTICE in fdk-aac).
+
+diff --git a/libAACenc/src/aacenc.cpp b/libAACenc/src/aacenc.cpp
+index 1af8a2e..33dddff 100644
+--- a/libAACenc/src/aacenc.cpp
++++ b/libAACenc/src/aacenc.cpp
+@@ -485,10 +485,11 @@ AAC_ENCODER_ERROR FDKaacEnc_Initialize(
+     return AAC_ENC_UNSUPPORTED_BITRATE;
+   }
+ 
+-  if (config->syntaxFlags & AC_ER_VCB11) {
++  /* VCB11 and HCR are only supported for DRM bitstream syntax */
++  if ((config->syntaxFlags & AC_ER_VCB11) && !(config->syntaxFlags & AC_DRM)) {
+     return AAC_ENC_UNSUPPORTED_ER_FORMAT;
+   }
+-  if (config->syntaxFlags & AC_ER_HCR) {
++  if ((config->syntaxFlags & AC_ER_HCR) && !(config->syntaxFlags & AC_DRM)) {
+     return AAC_ENC_UNSUPPORTED_ER_FORMAT;
+   }
+ 
+@@ -499,6 +500,11 @@ AAC_ENCODER_ERROR FDKaacEnc_Initialize(
+         return AAC_ENC_INVALID_FRAME_LENGTH;
+       }
+       break;
++    case 960: /* DRM */
++      if (isLowDelay(config->audioObjectType)) {
++        return AAC_ENC_INVALID_FRAME_LENGTH;
++      }
++      break;
+     case 128:
+     case 256:
+     case 512:
+diff --git a/libAACenc/src/aacenc_lib.cpp b/libAACenc/src/aacenc_lib.cpp
+index ee7f918..0337d36 100644
+--- a/libAACenc/src/aacenc_lib.cpp
++++ b/libAACenc/src/aacenc_lib.cpp
+@@ -937,6 +937,21 @@ static AACENC_ERROR FDKaacEnc_AdjustEncSettings(HANDLE_AACENCODER hAacEncoder,
+       if (hAacConfig->framelength != 1024 && hAacConfig->framelength != 960) {
+         return AACENC_INVALID_CONFIG;
+       }
++      if (config->userTpType == TT_DRM) {
++        /* DRM (ETSI ES 201 980) AAC: 960 granule, ER-AAC-SCAL like syntax with
++           virtual codebooks 11 and Huffman codeword reordering, AU-level
++           CRC-8. SBR (and PS) data is placed bit-reversed at the end of the AU.
++         */
++        if ((hAacConfig->framelength != 960) ||
++            (config->userAOT == AOT_MP2_AAC_LC) ||
++            (config->userAOT == AOT_MP2_SBR)) {
++          return AACENC_INVALID_CONFIG;
++        }
++        hAacConfig->epConfig = 1;
++        hAacConfig->syntaxFlags |=
++            AC_ER | AC_SCALABLE | AC_DRM | AC_ER_VCB11 | AC_ER_HCR;
++        hAacConfig->usePns = 0;
++      }
+       break;
+     case AOT_ER_AAC_LD:
+       hAacConfig->epConfig = 0;
+@@ -2103,7 +2118,8 @@ AACENC_ERROR aacEncGetLibInfo(LIB_INFO *info) {
+ 
+   /* Capability flags */
+   info[i].flags = 0 | CAPF_AAC_1024 | CAPF_AAC_LC | CAPF_AAC_512 |
+-                  CAPF_AAC_480 | CAPF_AAC_DRC | CAPF_AAC_ELD_DOWNSCALE;
++                  CAPF_AAC_480 | CAPF_AAC_DRC | CAPF_AAC_ELD_DOWNSCALE |
++                  CAPF_AAC_960 | CAPF_AAC_DRM_BSFORMAT;
+   /* End of flags */
+ 
+   return AACENC_OK;
+@@ -2258,6 +2274,7 @@ AACENC_ERROR aacEncoder_SetParam(const HANDLE_AACENCODER hAacEncoder,
+       if (settings->userFramelength != value) {
+         switch (value) {
+           case 1024:
++          case 960: /* DRM */
+           case 512:
+           case 480:
+           case 256:
+@@ -2310,7 +2327,8 @@ AACENC_ERROR aacEncoder_SetParam(const HANDLE_AACENCODER hAacEncoder,
+               ((type == TT_MP4_LATM_MCP1) &&
+                ((flags & CAPF_LATM) && (flags & CAPF_RAWPACKETS))) ||
+               ((type == TT_MP4_LOAS) && (flags & CAPF_LOAS)) ||
+-              ((type == TT_MP4_RAW) && (flags & CAPF_RAWPACKETS)))) {
++              ((type == TT_MP4_RAW) && (flags & CAPF_RAWPACKETS)) ||
++              ((type == TT_DRM) && (flags & CAPF_DRM)))) {
+           err = AACENC_INVALID_CONFIG;
+           break;
+         }
+diff --git a/libAACenc/src/bitenc.cpp b/libAACenc/src/bitenc.cpp
+index 957e821..e0c045c 100644
+--- a/libAACenc/src/bitenc.cpp
++++ b/libAACenc/src/bitenc.cpp
+@@ -260,12 +260,17 @@ static INT FDKaacEnc_encodeSectionData(SECTION_DATA *sectionData,
+         break;
+     }
+ 
++    if (useVCB11) {
++      sectCbBits = 5;
++    }
++
+     for (i = 0; i < sectionData->noOfSections; i++) {
+       INT codeBook = sectionData->huffsection[i].codeBook;
+ 
+       FDKwriteBits(hBitStream, codeBook, sectCbBits);
+ 
+-      {
++      /* VCB11: no sect_len for codebook 11 (and 16..31), always one sfb */
++      if (!(useVCB11 && ((codeBook == CODE_BOOK_ESC_NO) || (codeBook >= 16)))) {
+         sectLen = sectionData->huffsection[i].sfbCnt;
+ 
+         while (sectLen >= sectEscapeVal) {
+@@ -824,7 +829,32 @@ INT FDKaacEnc_writeExtensionData(HANDLE_TRANSPORTENC hTpEnc,
+     hBitStream = transportEnc_GetBitstream(hTpEnc);
+   }
+ 
+-  if (syntaxFlags & (AC_SCALABLE | AC_ER)) {
++  if (syntaxFlags & AC_DRM) {
++    switch (pExtension->type) {
++      case EXT_SBR_DATA:
++      case EXT_SBR_DATA_CRC:
++        /* written bit-reversed at the end of the AU, see
++         * FDKaacEnc_WriteBitstream() */
++        extBitsUsed += payloadBits;
++        break;
++      case EXT_FILL_DATA:
++      case EXT_FIL:
++        /* plain zero padding */
++        if (hBitStream != NULL) {
++          INT b = payloadBits;
++          while (b > 0) {
++            INT nb = fixMin(b, 24);
++            FDKwriteBits(hBitStream, 0, nb);
++            b -= nb;
++          }
++        }
++        extBitsUsed += payloadBits;
++        break;
++      default:
++        /* no other payloads (DSE, DRC, ...) in DRM AAC */
++        break;
++    }
++  } else if (syntaxFlags & (AC_SCALABLE | AC_ER)) {
+     {
+       if ((syntaxFlags & AC_ELD) && ((pExtension->type == EXT_SBR_DATA) ||
+                                      (pExtension->type == EXT_SBR_DATA_CRC))) {
+@@ -915,6 +945,229 @@ static void FDKaacEnc_ByteAlignment(HANDLE_FDK_BITSTREAM hBitStream,
+   FDKwriteBits(hBitStream, 0, alignBits);
+ }
+ 
++/*****************************************************************************
++
++    Huffman codeword reordering (HCR, ISO/IEC 14496-3 4.6.17) for DRM.
++
++    The codewords of one channel are sorted by codebook priority, then laid
++    out in a segment grid (priority codewords first), the remaining codewords
++    are distributed in sets with alternating read direction. This mirrors the
++    decoder in libAACdec/src/aacdec_hcr.cpp / aacdec_hcrs.cpp exactly.
++
++*****************************************************************************/
++
++#define HCR_MAX_CW (1024 / 2)
++#define HCR_MAX_LEN (6144)
++
++typedef struct {
++  UINT64 bits; /* codeword bits, right aligned, MSB is sent first */
++  UCHAR len;
++  UCHAR cb;
++} HCR_CODEWORD;
++
++typedef struct {
++  HCR_CODEWORD cw[HCR_MAX_CW];
++  INT numCw;
++  INT totalBits;
++  INT longestCw;
++} HCR_CHANNEL;
++
++/* codebook priorities and max codeword lengths (same as decoder tables) */
++static const UCHAR hcrCbPriority[32] = {0,  1,  1,  2,  2,  3,  3,  4,
++                                        4,  5,  5,  22, 0,  0,  0,  0,
++                                        6,  7,  8,  9,  10, 11, 12, 13,
++                                        14, 15, 16, 17, 18, 19, 20, 21};
++static const UCHAR hcrMaxCwLen[32] = {0,  11, 9,  20, 16, 13, 11, 14,
++                                      12, 17, 14, 49, 0,  0,  0,  0,
++                                      14, 17, 21, 21, 25, 25, 29, 29,
++                                      29, 29, 33, 33, 33, 37, 37, 41};
++
++/* Encode one codeword (one 4-tuple or 2-tuple) into a 64 bit word. */
++static void FDKaacEnc_hcrCodeOne(SHORT *values, INT cb, HCR_CODEWORD *cw) {
++  FDK_BITSTREAM bs;
++  UCHAR buf[16];
++  SHORT tmp[4];
++  INT nBits, i;
++  UINT64 bits = 0;
++
++  FDKinitBitStream(&bs, buf, sizeof(buf), 0, BS_WRITER);
++
++  if ((cb == CODE_BOOK_5_NO) || (cb == CODE_BOOK_6_NO)) {
++    /* encoder tables code two pairs at once: code the pair twice */
++    tmp[0] = tmp[2] = values[0];
++    tmp[1] = tmp[3] = values[1];
++    FDKaacEnc_codeValues(tmp, 4, cb, &bs);
++    nBits = FDKgetValidBits(&bs) >> 1;
++  } else {
++    FDKaacEnc_codeValues(values, (cb < CODE_BOOK_5_NO) ? 4 : 2, cb, &bs);
++    nBits = FDKgetValidBits(&bs);
++  }
++  FDKsyncCache(&bs);
++
++  for (i = 0; i < nBits; i++) {
++    bits = (bits << 1) | ((buf[i >> 3] >> (7 - (i & 7))) & 1);
++  }
++  cw->bits = bits;
++  cw->len = (UCHAR)nBits;
++  cw->cb = (UCHAR)cb;
++}
++
++/* Collect all codewords of one channel in HCR (priority) order. */
++static AAC_ENCODER_ERROR FDKaacEnc_hcrCollect(const PSY_OUT_CHANNEL *psyOutCh,
++                                              QC_OUT_CHANNEL *qcOutCh,
++                                              HCR_CHANNEL *hcr) {
++  const SECTION_DATA *sec = &qcOutCh->sectionData;
++  UCHAR cbMap[MAX_GROUPED_SFB];
++  INT i, sfb, prio;
++  const INT maxSfb = sec->maxSfbPerGroup;
++  const INT isShort = (sec->blockType == SHORT_WINDOW);
++
++  hcr->numCw = 0;
++  hcr->totalBits = 0;
++  hcr->longestCw = 0;
++
++  FDKmemclear(cbMap, sizeof(cbMap));
++  for (i = 0; i < sec->noOfSections; i++) {
++    for (sfb = sec->huffsection[i].sfbStart;
++         sfb < sec->huffsection[i].sfbStart + sec->huffsection[i].sfbCnt;
++         sfb++) {
++      cbMap[sfb] = (UCHAR)sec->huffsection[i].codeBook;
++    }
++  }
++
++  for (prio = 22; prio > 0; prio--) {
++    if (!isShort) {
++      for (sfb = 0; sfb < maxSfb; sfb++) {
++        INT cb = cbMap[sfb], line;
++        if (cb > 11 || hcrCbPriority[cb] != prio) continue;
++        for (line = psyOutCh->sfbOffsets[sfb]; line < psyOutCh->sfbOffsets[sfb + 1];
++             line += (cb < CODE_BOOK_5_NO) ? 4 : 2) {
++          if (hcr->numCw >= HCR_MAX_CW) return AAC_ENC_WRITE_SPEC_ERROR;
++          FDKaacEnc_hcrCodeOne(&qcOutCh->quantSpec[line], cb,
++                               &hcr->cw[hcr->numCw++]);
++        }
++      }
++    } else {
++      /* short blocks: unit (4 lines) interleaved order: band, unit, group,
++         window */
++      INT nGroups = sec->noOfGroups;
++      for (sfb = 0; sfb < maxSfb; sfb++) {
++        INT g0Width = (psyOutCh->sfbOffsets[sfb + 1] - psyOutCh->sfbOffsets[sfb]) /
++                      psyOutCh->groupLen[0];
++        INT unit, nUnits = g0Width >> 2;
++        for (unit = 0; unit < nUnits; unit++) {
++          INT grp;
++          for (grp = 0; grp < nGroups; grp++) {
++            INT gSfb = grp * sec->sfbPerGroup + sfb;
++            INT cb = cbMap[gSfb], win;
++            INT width = (psyOutCh->sfbOffsets[gSfb + 1] - psyOutCh->sfbOffsets[gSfb]) /
++                        psyOutCh->groupLen[grp];
++            if (cb > 11 || hcrCbPriority[cb] != prio) continue;
++            for (win = 0; win < psyOutCh->groupLen[grp]; win++) {
++              INT line = psyOutCh->sfbOffsets[gSfb] + win * width + (unit << 2);
++              INT k;
++              for (k = 0; k < 4; k += (cb < CODE_BOOK_5_NO) ? 4 : 2) {
++                if (hcr->numCw >= HCR_MAX_CW) return AAC_ENC_WRITE_SPEC_ERROR;
++                FDKaacEnc_hcrCodeOne(&qcOutCh->quantSpec[line + k], cb,
++                                     &hcr->cw[hcr->numCw++]);
++              }
++            }
++          }
++        }
++      }
++    }
++  }
++
++  for (i = 0; i < hcr->numCw; i++) {
++    hcr->totalBits += hcr->cw[i].len;
++    hcr->longestCw = fixMax(hcr->longestCw, (INT)hcr->cw[i].len);
++  }
++  if ((hcr->totalBits > HCR_MAX_LEN) || (hcr->longestCw > 49)) {
++    return AAC_ENC_WRITE_SPEC_ERROR;
++  }
++  return AAC_ENC_OK;
++}
++
++/* Lay out the codewords in the HCR segment grid and write them. */
++static AAC_ENCODER_ERROR FDKaacEnc_hcrWrite(const HCR_CHANNEL *hcr,
++                                            HANDLE_FDK_BITSTREAM hBs) {
++  UCHAR out[HCR_MAX_LEN];
++  SHORT left[HCR_MAX_CW], right[HCR_MAX_CW];
++  UCHAR pos[HCR_MAX_CW];
++  INT numSeg = 0, segStart = 0, i, k, set, numSet, dirR2L;
++  const INT L = hcr->totalBits;
++
++  if (L == 0) return AAC_ENC_OK;
++
++  FDKmemclear(out, L);
++
++  /* segmentation grid */
++  for (k = 0; k < hcr->numCw; k++) {
++    INT w = fixMin((INT)hcrMaxCwLen[hcr->cw[k].cb], hcr->longestCw);
++    if (segStart + w <= L) {
++      left[numSeg] = (SHORT)segStart;
++      right[numSeg] = (SHORT)(segStart + w - 1);
++      numSeg++;
++      segStart += w;
++    } else {
++      right[numSeg - 1] = (SHORT)(L - 1); /* extend last segment */
++      break;
++    }
++  }
++
++  /* priority codewords: one per segment, written left to right */
++  for (k = 0; k < numSeg; k++) {
++    const HCR_CODEWORD *cw = &hcr->cw[k];
++    for (i = 0; i < cw->len; i++) {
++      out[left[k]++] = (UCHAR)((cw->bits >> (cw->len - 1 - i)) & 1);
++    }
++  }
++
++  /* non priority codewords: sets of numSeg codewords, alternating direction
++   */
++  numSet = ((hcr->numCw - 1) / numSeg) + 1;
++  if (numSet > 14) { /* MAX_HCR_SETS of the decoder */
++    return AAC_ENC_WRITE_SPEC_ERROR;
++  }
++  dirR2L = 1;
++  for (set = 1; set < numSet; set++) {
++    const INT cwBase = set * numSeg;
++    const INT cwInSet = fixMin(numSeg, hcr->numCw - cwBase);
++    INT trial;
++    FDKmemclear(pos, sizeof(pos));
++    for (trial = 0; trial < numSeg; trial++) {
++      INT seg;
++      for (seg = 0; seg < numSeg; seg++) {
++        INT c = seg - trial;
++        const HCR_CODEWORD *cw;
++        if (c < 0) c += numSeg;
++        if (c >= cwInSet) continue;
++        cw = &hcr->cw[cwBase + c];
++        while ((pos[c] < cw->len) && (left[seg] <= right[seg])) {
++          UCHAR bit = (UCHAR)((cw->bits >> (cw->len - 1 - pos[c])) & 1);
++          if (dirR2L) {
++            out[right[seg]--] = bit;
++          } else {
++            out[left[seg]++] = bit;
++          }
++          pos[c]++;
++        }
++      }
++    }
++    for (k = 0; k < cwInSet; k++) {
++      if (pos[k] != hcr->cw[cwBase + k].len) {
++        return AAC_ENC_WRITE_SPEC_ERROR; /* must not happen */
++      }
++    }
++    dirR2L = !dirR2L;
++  }
++
++  for (i = 0; i < L; i++) {
++    FDKwriteBits(hBs, out[i], 1);
++  }
++  return AAC_ENC_OK;
++}
++
+ AAC_ENCODER_ERROR FDKaacEnc_ChannelElementWrite(
+     HANDLE_TRANSPORTENC hTpEnc, ELEMENT_INFO *pElInfo,
+     QC_OUT_CHANNEL *qcOutChannel[(2)], PSY_OUT_ELEMENT *psyOutElement,
+@@ -927,6 +1180,7 @@ AAC_ENCODER_ERROR FDKaacEnc_ChannelElementWrite(
+   int i, ch, decision_bit;
+   INT crcReg1 = -1, crcReg2 = -1;
+   UCHAR numberOfChannels;
++  HCR_CHANNEL hcrCh[2];
+ 
+   if (hTpEnc != NULL) {
+     /* Get bitstream handle */
+@@ -940,7 +1194,11 @@ AAC_ENCODER_ERROR FDKaacEnc_ChannelElementWrite(
+   }
+ 
+   /* Get channel element sequence table */
+-  list = getBitstreamElementList(aot, epConfig, numberOfChannels, 0, 0);
++  if (syntaxFlags & AC_DRM) {
++    list = getBitstreamElementList(AOT_DRM_AAC, 1, numberOfChannels, 0, 0);
++  } else {
++    list = getBitstreamElementList(aot, epConfig, numberOfChannels, 0, 0);
++  }
+   if (list == NULL) {
+     error = AAC_ENC_UNSUPPORTED_AOT;
+     goto bail;
+@@ -1102,12 +1360,30 @@ AAC_ENCODER_ERROR FDKaacEnc_ChannelElementWrite(
+ 
+       case esc1_hcr:
+         if (syntaxFlags & AC_ER_HCR) {
+-          error = AAC_ENC_UNKNOWN;
++          /* length_of_reordered_spectral_data (14),
++             length_of_longest_codeword (6) */
++          if (hBitStream != NULL) {
++            error = FDKaacEnc_hcrCollect(psyOutChannel[ch], qcOutChannel[ch],
++                                         &hcrCh[ch]);
++            if (error != AAC_ENC_OK) break;
++            FDKwriteBits(hBitStream, hcrCh[ch].totalBits, 14);
++            FDKwriteBits(hBitStream, hcrCh[ch].longestCw, 6);
++          }
++          bitDemand += 14 + 6;
+         }
+         break;
+ 
+       case spectral_data:
+-        if (hBitStream != NULL) {
++        if ((hBitStream != NULL) && (syntaxFlags & AC_ER_HCR)) {
++          INT startBits = FDKgetValidBits(hBitStream);
++          error = FDKaacEnc_hcrWrite(&hcrCh[ch], hBitStream);
++          if (error != AAC_ENC_OK) break;
++          if ((INT)(FDKgetValidBits(hBitStream) - startBits) !=
++              qcOutChannel[ch]->sectionData.huffmanBits) {
++            return AAC_ENC_WRITE_SPEC_ERROR;
++          }
++          bitDemand += qcOutChannel[ch]->sectionData.huffmanBits;
++        } else if (hBitStream != NULL) {
+           INT spectralBits = 0;
+ 
+           spectralBits = FDKaacEnc_encodeSpectralData(
+@@ -1300,6 +1576,27 @@ AAC_ENCODER_ERROR FDKaacEnc_WriteBitstream(HANDLE_TRANSPORTENC hTpEnc,
+     FDKwriteBits(hBs, ID_END, EL_ID_BITS);
+   }
+ 
++  if (syntaxFlags & AC_DRM) {
++    /* DRM: zero padding, then SBR data written bit-reversed so that it ends
++       exactly at the end of the AU (decoder reads it backwards). */
++    FDKaacEnc_ByteAlignment(hBs, qcOut->alignBits);
++    for (i = 0; i < channelMapping->nElements; i++) {
++      for (n = 0; n < qcOut->qcElement[i]->nExtensions; n++) {
++        QC_OUT_EXTENSION *pExt = &qcOut->qcElement[i]->extension[n];
++        if ((pExt->type == EXT_SBR_DATA) || (pExt->type == EXT_SBR_DATA_CRC)) {
++          INT b;
++          for (b = pExt->nPayloadBits - 1; b >= 0; b--) {
++            FDKwriteBits(hBs, (pExt->pPayload[b >> 3] >> (7 - (b & 7))) & 1, 1);
++          }
++        }
++      }
++    }
++    if (((FDKgetValidBits(hBs) - alignAnchor) & 0x7) != 0) {
++      return AAC_ENC_WRITTEN_BITS_ERROR;
++    }
++    doByteAlign = 0;
++  }
++
+   if (doByteAlign) {
+     /* Assure byte alignment*/
+     if (((FDKgetValidBits(hBs) - alignAnchor + qcOut->alignBits) & 0x7) != 0) {
+diff --git a/libAACenc/src/dyn_bits.cpp b/libAACenc/src/dyn_bits.cpp
+index 74baeb8..7e61fe9 100644
+--- a/libAACenc/src/dyn_bits.cpp
++++ b/libAACenc/src/dyn_bits.cpp
+@@ -112,16 +112,21 @@ typedef INT (*lookUpTable)[CODE_BOOK_ESC_NDX + 1];
+ static INT FDKaacEnc_getSideInfoBits(const SECTION_INFO* const huffsection,
+                                      const SHORT* const sideInfoTab,
+                                      const INT useHCR) {
+-  INT sideInfoBits;
++  /* Sectioning decisions always use the plain section side info cost. The
++     exact cost with virtual codebooks (VCB11, DRM) is applied once the final
++     sections are known, see FDKaacEnc_getSideInfoBitsVcb11(). */
++  return (sideInfoTab[huffsection->sfbCnt]);
++}
+ 
+-  if (useHCR &&
+-      ((huffsection->codeBook == 11) || (huffsection->codeBook >= 16))) {
+-    sideInfoBits = 5;
+-  } else {
+-    sideInfoBits = sideInfoTab[huffsection->sfbCnt];
++/* Side info bits of one section if virtual codebooks 11 (VCB11) are active:
++   sect_cb has 5 bits, sections with codebook 11 have no sect_len (length is
++   always one sfb). */
++static INT FDKaacEnc_getSideInfoBitsVcb11(const INT codeBook, const INT sfbCnt,
++                                          const SHORT* const sideInfoTab) {
++  if ((codeBook == CODE_BOOK_ESC_NO) || (codeBook >= 16)) {
++    return 5;
+   }
+-
+-  return (sideInfoBits);
++  return sideInfoTab[sfbCnt] + 1;
+ }
+ 
+ /* count bits using all possible tables */
+@@ -346,7 +351,7 @@ static void FDKaacEnc_noiselessCounter(
+     const SHORT* const quantSpectrum, const UINT* const maxValueInSfb,
+     const INT* const sfbOffset, const INT blockType, const INT* const noiseNrg,
+     const INT* const isBook, const INT useVCB11) {
+-  INT grpNdx, i;
++  INT grpNdx, i, iNext;
+   const SHORT* sideInfoTab = NULL;
+   SECTION_INFO* huffsection;
+ 
+@@ -402,7 +407,10 @@ static void FDKaacEnc_noiselessCounter(
+        to save time, we must set it here for later use in bitenc
+      */
+ 
+-    for (i = 0; i < sectionData->maxSfbPerGroup; i += huffsection[i].sfbCnt) {
++    for (i = 0; i < sectionData->maxSfbPerGroup; i = iNext) {
++      /* next section start, read before huffsection[i] may be overwritten by
++       * the (in-place) output copy below */
++      iNext = i + huffsection[i].sfbCnt;
+       if ((huffsection[i].codeBook == CODE_BOOK_PNS_NO) ||
+           (huffsection[i].codeBook == CODE_BOOK_IS_OUT_OF_PHASE_NO) ||
+           (huffsection[i].codeBook == CODE_BOOK_IS_IN_PHASE_NO)) {
+@@ -421,6 +429,27 @@ static void FDKaacEnc_noiselessCounter(
+ 
+       huffsection[i].sfbStart += grpNdx;
+ 
++      if (useVCB11) {
++        /* VCB11: codebook 11 sections cover exactly one sfb -> split them.
++           Output index never overtakes the input index (one output entry per
++           sfb at most), so in-place copying is safe. */
++        const SECTION_INFO sec = huffsection[i];
++        const INT nSplit = (sec.codeBook == CODE_BOOK_ESC_NO) ? sec.sfbCnt : 1;
++        INT k;
++        for (k = 0; k < nSplit; k++) {
++          SECTION_INFO* dst =
++              &sectionData->huffsection[sectionData->noOfSections++];
++          *dst = sec;
++          if (nSplit > 1) {
++            dst->sfbStart = sec.sfbStart + k;
++            dst->sfbCnt = 1;
++          }
++          sectionData->sideInfoBits += FDKaacEnc_getSideInfoBitsVcb11(
++              dst->codeBook, dst->sfbCnt, sideInfoTab);
++        }
++        continue;
++      }
++
+       /* sum up side info bits (section data bits) */
+       sectionData->sideInfoBits +=
+           FDKaacEnc_getSideInfoBits(&huffsection[i], sideInfoTab, useVCB11);
+diff --git a/libMpegTPEnc/src/tpenc_lib.cpp b/libMpegTPEnc/src/tpenc_lib.cpp
+index 77c19b5..b422e4c 100644
+--- a/libMpegTPEnc/src/tpenc_lib.cpp
++++ b/libMpegTPEnc/src/tpenc_lib.cpp
+@@ -121,6 +121,16 @@ typedef struct {
+   int prevBits;
+ } RAWPACKETS_INFO;
+ 
++/* DRM (ETSI ES 201 980) AAC access unit: the AU starts with an 8 bit CRC
++   (polynomial x^8+x^4+x^3+x^2+1, init 0xFF, inverted) which protects the
++   side info region delimited by drmcrc_start_reg/drmcrc_end_reg. The CRC
++   byte is written as placeholder and patched in transportEnc_GetFrame(). */
++typedef struct {
++  FDK_CRCINFO crcInfo;
++  INT crcRegion;
++  UCHAR crcValue;
++} DRM_WRITER_INFO;
++
+ struct TRANSPORTENC {
+   CODER_CONFIG config;
+   TRANSPORT_TYPE transportFmt; /*!< MPEG4 transport type. */
+@@ -141,6 +151,8 @@ struct TRANSPORTENC {
+ 
+     RAWPACKETS_INFO raw;
+ 
++    DRM_WRITER_INFO drm;
++
+   } writer;
+ 
+   CSTpCallBacks callbacks;
+@@ -313,6 +325,16 @@ TRANSPORTENC_ERROR transportEnc_Init(HANDLE_TRANSPORTENC hTpEnc,
+       hTpEnc->writer.raw.nSubFrames = hTpEnc->config.nSubFrames;
+       break;
+ 
++    case TT_DRM:
++      if ((hTpEnc->config.samplesPerFrame != 960) ||
++          (hTpEnc->config.nSubFrames > 1)) {
++        return TRANSPORTENC_INVALID_PARAMETER;
++      }
++      FDKcrcInit(&hTpEnc->writer.drm.crcInfo, 0x001d, 0xFF, 8);
++      hTpEnc->writer.drm.crcRegion = 0;
++      hTpEnc->writer.drm.crcValue = 0;
++      break;
++
+     default:
+       return TRANSPORTENC_INVALID_PARAMETER;
+   }
+@@ -427,6 +449,12 @@ TRANSPORTENC_ERROR transportEnc_WriteAccessUnit(HANDLE_TRANSPORTENC hTp,
+       }
+       hTp->writer.raw.prevBits = FDKgetValidBits(hBs);
+       break;
++    case TT_DRM:
++      /* one AU per buffer, AU starts at bit 0 */
++      FDKinitBitStream(&hTp->bitStream, hTp->bsBuffer, hTp->bsBufferSize, 0,
++                       BS_WRITER);
++      hTp->writer.drm.crcValue = 0;
++      break;
+     default:
+       err = TRANSPORTENC_UNSUPPORTED_FORMAT;
+       break;
+@@ -523,6 +551,14 @@ TRANSPORTENC_ERROR transportEnc_GetFrame(HANDLE_TRANSPORTENC hTpEnc,
+       hTpEnc->writer.raw.curSubFrame++;
+       *nbytes = ((FDKgetValidBits(hBs) - hTpEnc->writer.raw.prevBits) + 7) >> 3;
+       break;
++    case TT_DRM:
++      FDKsyncCache(hBs);
++      *nbytes = (FDKgetValidBits(hBs) + 7) >> 3;
++      if (*nbytes > 0) {
++        /* patch CRC placeholder (first byte of AU) */
++        hTpEnc->bsBuffer[0] = hTpEnc->writer.drm.crcValue;
++      }
++      break;
+     default:
+       break;
+   }
+@@ -548,6 +584,9 @@ INT transportEnc_GetStaticBits(HANDLE_TRANSPORTENC hTp, int auBits) {
+     case TT_MP4_RAW:
+       nbits = 0; /* Do not consider the ADIF header into the total bitrate */
+       break;
++    case TT_DRM:
++      nbits = 8; /* aac_crc_bits */
++      break;
+     case TT_MP4_ADTS:
+       nbits = adtsWrite_GetHeaderBits(&hTp->writer.adts);
+       break;
+@@ -585,6 +624,14 @@ int transportEnc_CrcStartReg(HANDLE_TRANSPORTENC hTpEnc, int mBits) {
+       crcReg = adtsWrite_CrcStartReg(&hTpEnc->writer.adts, &hTpEnc->bitStream,
+                                      mBits);
+       break;
++    case TT_DRM:
++      /* placeholder for aac_crc_bits, CRC region starts after it */
++      FDKwriteBits(&hTpEnc->bitStream, 0, 8);
++      FDKcrcReset(&hTpEnc->writer.drm.crcInfo);
++      crcReg = FDKcrcStartReg(&hTpEnc->writer.drm.crcInfo, &hTpEnc->bitStream,
++                              mBits);
++      hTpEnc->writer.drm.crcRegion = crcReg;
++      break;
+     default:
+       break;
+   }
+@@ -597,6 +644,11 @@ void transportEnc_CrcEndReg(HANDLE_TRANSPORTENC hTpEnc, int reg) {
+     case TT_MP4_ADTS:
+       adtsWrite_CrcEndReg(&hTpEnc->writer.adts, &hTpEnc->bitStream, reg);
+       break;
++    case TT_DRM:
++      FDKcrcEndReg(&hTpEnc->writer.drm.crcInfo, &hTpEnc->bitStream, reg);
++      hTpEnc->writer.drm.crcValue =
++          (UCHAR)((FDKcrcGetCRC(&hTpEnc->writer.drm.crcInfo) ^ 0xFF) & 0xFF);
++      break;
+     default:
+       break;
+   }
+@@ -658,7 +710,8 @@ TRANSPORTENC_ERROR transportEnc_GetLibInfo(LIB_INFO *info) {
+ 
+   /* Set flags */
+   info->flags =
+-      0 | CAPF_ADIF | CAPF_ADTS | CAPF_LATM | CAPF_LOAS | CAPF_RAWPACKETS;
++      0 | CAPF_ADIF | CAPF_ADTS | CAPF_LATM | CAPF_LOAS | CAPF_RAWPACKETS |
++      CAPF_DRM;
+ 
+   return TRANSPORTENC_OK;
+ }
+diff --git a/libSBRenc/src/sbr_encoder.cpp b/libSBRenc/src/sbr_encoder.cpp
+index c3da072..9c15480 100644
+--- a/libSBRenc/src/sbr_encoder.cpp
++++ b/libSBRenc/src/sbr_encoder.cpp
+@@ -1660,7 +1660,7 @@ static INT FDKsbrEnc_EnvInit(HANDLE_SBR_ELEMENT hSbrElement,
+                              AUDIO_OBJECT_TYPE aot, int nElement,
+                              const int headerPeriod, ULONG statesInitFlag,
+                              const SBRENC_DS_TYPE downsamplingMethod,
+-                             UCHAR *dynamic_RAM) {
++                             UCHAR *dynamic_RAM, const UINT coreSyntaxFlags) {
+   int ch, i;
+ 
+   if ((params->codecSettings.nChannels < 1) ||
+@@ -1681,6 +1681,11 @@ static INT FDKsbrEnc_EnvInit(HANDLE_SBR_ELEMENT hSbrElement,
+   if (params->crcSbr) {
+     hSbrElement->sbrConfigData.sbrSyntaxFlags |= SBR_SYNTAX_CRC;
+   }
++  if (coreSyntaxFlags & AC_DRM) {
++    /* DRM: scalable SBR syntax with 8 bit DRM CRC */
++    hSbrElement->sbrConfigData.sbrSyntaxFlags |=
++        SBR_SYNTAX_SCALABLE | SBR_SYNTAX_CRC | SBR_SYNTAX_DRM_CRC;
++  }
+ 
+   hSbrElement->sbrConfigData.noQmfBands = 64 >> (2 - params->downSampleFactor);
+   switch (hSbrElement->sbrConfigData.noQmfBands) {
+@@ -2231,7 +2236,7 @@ INT sbrEncoder_Init(HANDLE_SBR_ENCODER hSbrEncoder,
+       error = FDKsbrEnc_EnvInit(hSbrEncoder->sbrElement[el], &sbrConfig[el],
+                                 &bandwidth, aot, el, headerPeriod,
+                                 statesInitFlag, hSbrEncoder->downsamplingMethod,
+-                                hSbrEncoder->dynamicRam);
++                                hSbrEncoder->dynamicRam, syntaxFlags);
+ 
+       if (error != 0) {
+         error = 2;
+@@ -2569,7 +2574,7 @@ INT sbrEncoder_GetLibInfo(LIB_INFO *info) {
+   info->title = "SBR Encoder";
+ 
+   /* Set flags */
+-  info->flags = 0 | CAPF_SBR_HQ | CAPF_SBR_PS_MPEG;
++  info->flags = 0 | CAPF_SBR_HQ | CAPF_SBR_PS_MPEG | CAPF_SBR_DRM_BS;
+   /* End of flags */
+ 
+   return 0;

@@ -60,6 +60,12 @@ protected:
     HANDLE_AACENCODER hEncoder;
     bool bUsac;
     int16_t decode_buf[13840];
+    /* Encoder state */
+    bool bEncDrm;             /* true: DRM AAC (TT_DRM, 960), false: ADTS (AC_MPEGAAC) */
+    int iEncCoreSampleRate;   /* AAC core sample rate (12/24/48 kHz for DRM) */
+    std::vector<INT_PCM> encInBuf;
+    std::vector<UCHAR> encOutBuf;
+    static bool HasDrmEncoder();
 };
 
 #endif // FDK_AAC_CODEC_H_

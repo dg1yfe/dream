@@ -34,7 +34,8 @@
 #include <iomanip>
 
 FdkAacCodec::FdkAacCodec() :
-    hDecoder(nullptr), hEncoder(nullptr),bUsac(false),decode_buf()
+    hDecoder(nullptr), hEncoder(nullptr),bUsac(false),decode_buf(),
+    bEncDrm(false), iEncCoreSampleRate(0), encInBuf(), encOutBuf()
 {
 }
 
@@ -46,11 +47,12 @@ FdkAacCodec::~FdkAacCodec()
 }
 
 static void aacinfo(LIB_INFO& inf) {
-    LIB_INFO info[12];
+    LIB_INFO info[FDK_MODULE_LAST];
     memset(info, 0, sizeof(info));
+    memset(&inf, 0, sizeof(inf));
+    FDKinitLibInfo(info);
     aacDecoder_GetLibInfo(info);
-    stringstream version;
-    for(int i=0; info[i].module_id!=FDK_NONE && i<12; i++) {
+    for(int i=0; i<FDK_MODULE_LAST && info[i].module_id!=FDK_NONE; i++) {
         if(info[i].module_id == FDK_AACDEC) {
             inf = info[i];
         }
@@ -77,11 +79,22 @@ FdkAacCodec::CanDecode(CAudioParam::EAudCod eAudioCoding)
             cerr << "aac but codec has no drm" << endl;
             return false;
         }
-        if((linfo.flags & CAPF_SBR_DRM_BS) ==0 ) {
+        /* SBR/PS capabilities live in the FDK_SBRDEC module entry (the old
+           code tested them against the AAC decoder flags, which only passed
+           because of overlapping bit values). Open-source fdk-aac 2.0.x
+           decodes DRM parametric stereo with the MPEG-4 PS tool and reports
+           CAPF_SBR_PS_MPEG only; CAPF_SBR_PS_DRM (legacy DRM PS) is not
+           available there. */
+        LIB_INFO all[FDK_MODULE_LAST];
+        memset(all, 0, sizeof(all));
+        FDKinitLibInfo(all);
+        aacDecoder_GetLibInfo(all);
+        UINT sbrFlags = FDKlibInfo_getCapabilities(all, FDK_SBRDEC);
+        if((sbrFlags & CAPF_SBR_DRM_BS) == 0) {
             cerr << "aac but  codec has no sbr" << endl;
             return false;
         }
-        if((linfo.flags & CAPF_SBR_PS_DRM) == 0) {
+        if((sbrFlags & (CAPF_SBR_PS_DRM | CAPF_SBR_PS_MPEG)) == 0) {
             cerr << "aac but  codec has no parametric stereo" << endl;
             return false;
         }
@@ -297,7 +310,7 @@ CAudioCodec::EDecError FdkAacCodec::Decode(const vector<uint8_t>& audio_frame, u
     CStreamInfo *pinfo = aacDecoder_GetStreamInfo(hDecoder);
     if (pinfo==nullptr) {
         cerr << "No stream info" << endl;
-        //return nullptr; this breaks everything!
+        return CAudioCodec::DECODER_ERROR_UNKNOWN;
     }
 
     //cerr << "Decode";
@@ -328,14 +341,16 @@ CAudioCodec::EDecError FdkAacCodec::Decode(const vector<uint8_t>& audio_frame, u
         //return CAudioCodec::DECODER_ERROR_UNKNOWN;
     }
 
-    size_t output_size = unsigned(pinfo->frameSize * pinfo->numChannels);
-    if(sizeof (decode_buf) < sizeof(int16_t)*output_size) {
-        cerr << "can't fit output into decoder buffer" << endl;
+    /* frameSize/numChannels are only valid after decoding (they still
+       describe the previous frame here, or are 0 for the first frame), so
+       offer the whole buffer to the decoder */
+    memset(decode_buf, 0, sizeof(decode_buf));
+    err = aacDecoder_DecodeFrame(hDecoder, decode_buf, int(sizeof(decode_buf)/sizeof(decode_buf[0])), 0);
+    pinfo = aacDecoder_GetStreamInfo(hDecoder);
+    if (pinfo == nullptr) {
         return CAudioCodec::DECODER_ERROR_UNKNOWN;
     }
-
-    memset(decode_buf, 0, sizeof(int16_t)*output_size);
-    err = aacDecoder_DecodeFrame(hDecoder, decode_buf, int(output_size), 0);
+    const size_t output_size = size_t(pinfo->frameSize) * size_t(pinfo->numChannels);
 
     if(err == AAC_DEC_OK) {
         double d = 0.0;
@@ -405,240 +420,215 @@ FdkAacCodec::DecUpdate(CAudioParam&)
 }
 
 
+/* ---------------------------------------------------------------------------
+ * Encoder
+ *
+ * AC_AAC (DRM AAC): needs an fdk-aac built with the DRM encoder patch
+ * (macx/patches/fdk-aac-2.0.3-drm-encoder.patch): TT_DRM transport, 960
+ * sample granule, VCB11 + HCR, aac_crc_bits, SBR bit-reversed at the end of
+ * the AU. Each encoded AU is [aac_crc_bits (1 byte)][audio_frame], which is
+ * exactly what CAudioSourceEncoderImplementation::ProcessDataInternal() expects.
+ * Stock fdk-aac has no DRM encoder: CanEncode(AC_AAC) is false then and the
+ * codec list falls back to AacCodec (libfaac_drm).
+ *
+ * AC_MPEGAAC: plain ADTS AAC (RSCI/AM rebroadcast path).
+ * ------------------------------------------------------------------------- */
+
+static UINT fdkEncCaps(FDK_MODULE_ID module)
+{
+    LIB_INFO info[FDK_MODULE_LAST];
+    memset(info, 0, sizeof(info));
+    FDKinitLibInfo(info);
+    if (aacEncGetLibInfo(info) != AACENC_OK)
+        return 0;
+    return FDKlibInfo_getCapabilities(info, module);
+}
+
+bool
+FdkAacCodec::HasDrmEncoder()
+{
+    const UINT aac = fdkEncCaps(FDK_AACENC);
+    const UINT tp = fdkEncCaps(FDK_TPENC);
+    const UINT sbr = fdkEncCaps(FDK_SBRENC);
+    return (aac & CAPF_AAC_DRM_BSFORMAT) && (aac & CAPF_AAC_960)
+        && (tp & CAPF_DRM) && (sbr & CAPF_SBR_DRM_BS);
+}
+
 string
 FdkAacCodec::EncGetVersion()
 {
-    /*
-    LIB_INFO info;
-    aacEncGetLibInfo(&info);
-    stringstream version;
-    version << int((info.version >> 24) & 0xff)
-            << '.'
-            << int((info.version >> 16) & 0xff)
-            << '.'
-            << int((info.version >> 8) & 0xff);
-    return version.str();
-    */
-    return "1.0";
+    LIB_INFO info[FDK_MODULE_LAST];
+    memset(info, 0, sizeof(info));
+    FDKinitLibInfo(info);
+    aacEncGetLibInfo(info);
+    for (int i = 0; i < FDK_MODULE_LAST && info[i].module_id != FDK_NONE; i++) {
+        if (info[i].module_id == FDK_AACENC) {
+            stringstream version;
+            version << info[i].title << " version " << info[i].versionStr
+                    << (HasDrmEncoder() ? " (DRM)" : "");
+            return version.str();
+        }
+    }
+    return "fdk-aac (unknown version)";
 }
 
 bool
 FdkAacCodec::CanEncode(CAudioParam::EAudCod eAudioCoding)
 {
-    return (eAudioCoding == CAudioParam::AC_MPEGAAC);
-
-    if(eAudioCoding != CAudioParam::AC_AAC)
+    switch (eAudioCoding) {
+    case CAudioParam::AC_MPEGAAC:
+        return true;
+    case CAudioParam::AC_AAC:
+        return HasDrmEncoder();
+    default:
         return false;
-    if(hEncoder == nullptr) {
-        AACENC_ERROR r = aacEncOpen(&hEncoder, 0x01|0x02|0x04|0x08, 0); // allocate all modules except the metadata module, let library allocate channels in case we get to use MPS
-        if(r!=AACENC_OK) {
-            hEncoder = nullptr;
-            return false;
-        }
-        UINT aot = aacEncoder_GetParam(hEncoder, AACENC_AOT);
-        if(aot==AOT_DRM_AAC)
-                return true;
-        if(aot==AOT_DRM_SBR)
-                return true;
-        if(aot==AOT_DRM_MPEG_PS)
-                return true;
-        //if(aot==AOT_DRM_SURROUND)
-        //        return true;
-        r = aacEncoder_SetParam(hEncoder, AACENC_AOT, AOT_DRM_SBR);
-        aacEncoder_SetParam(hEncoder, AACENC_AOT, aot);
-        aacEncClose(&hEncoder);
-        hEncoder = nullptr;
-        return r==AACENC_OK;
     }
-    else {
-        UINT aot = aacEncoder_GetParam(hEncoder, AACENC_AOT);
-        if(aot==AOT_DRM_AAC)
-                return true;
-        if(aot==AOT_DRM_SBR)
-                return true;
-        if(aot==AOT_DRM_MPEG_PS)
-                return true;
-        //if(aot==AOT_DRM_SURROUND)
-        //        return true;
-    }
-    return false;
 }
 
 bool
 FdkAacCodec::EncOpen(const CAudioParam& AudioParam, unsigned long& lNumSampEncIn, unsigned long& lMaxBytesEncOut)
 {
-    AACENC_ERROR r = aacEncOpen(&hEncoder, 0x01|0x02|0x04|0x08, 0); // allocate all modules except the metadata module, let library allocate channels in case we get to use MPS
-    if(r!=AACENC_OK) {
-        cerr << "error opening encoder " << r << endl;
+    lNumSampEncIn = 0;
+    lMaxBytesEncOut = 0;
+    EncClose();
+
+    bEncDrm = (AudioParam.eAudioCoding == CAudioParam::AC_AAC);
+    if (bEncDrm && !HasDrmEncoder()) {
+        cerr << "fdk-aac: library has no DRM encoder" << endl;
         return false;
     }
-    /*
-     *  AOT_DRM_AAC      = 143,  Virtual AOT for DRM (ER-AAC-SCAL without SBR)
-     *  AOT_DRM_SBR      = 144,  Virtual AOT for DRM (ER-AAC-SCAL with SBR)
-     *  AOT_DRM_MPEG_PS  = 145,  Virtual AOT for DRM (ER-AAC-SCAL with SBR and MPEG-PS)
-     *  AOT_DRM_SURROUND = 146,  Virtual AOT for DRM Surround (ER-AAC-SCAL (+SBR) +MPS)
-     *  AOT_DRM_USAC     = 147   Virtual AOT for DRM with USAC
-     * NB decoder uses only AOT_DRM_AAC and puts SBR, PS in sub fields - what should we do with the encoder?
-     */
-    switch (AudioParam.eAudioMode) {
-    case CAudioParam::AM_RESERVED:break;
-    case CAudioParam::AM_MONO:
-        if(AudioParam.eSBRFlag) {
-            r = aacEncoder_SetParam(hEncoder, AACENC_AOT, AOT_DRM_SBR);
-        }
-        else {
-            r = aacEncoder_SetParam(hEncoder, AACENC_AOT, AOT_AAC_LC); // OpenDigitalRadio version doesn't claim to support AOT_DRM_AAC
-        }
-        break;
-    case CAudioParam::AM_P_STEREO:
-        r = aacEncoder_SetParam(hEncoder, AACENC_AOT, AOT_DRM_MPEG_PS);
-        break;
-    case CAudioParam::AM_STEREO:
-        r = aacEncoder_SetParam(hEncoder, AACENC_AOT, AOT_DRM_SBR);
-        break;
-    //case CAudioParam::AM_SURROUND:
-        //r = aacEncoder_SetParam(hEncoder, AACENC_AOT, AOT_DRM_SURROUND);
-    }
-    if(r!=AACENC_OK) {
-        if(r==AACENC_INVALID_CONFIG) {
-            cerr << "invalid config setting DRM mode" << endl;
-        }
-        else {
-            cerr << "error setting DRM mode" << hex << r << dec << endl;
-        }
-        return false;
-    }
+
     switch (AudioParam.eAudioSamplRate) {
-    case CAudioParam::AS_12KHZ:
-        r = aacEncoder_SetParam(hEncoder, AACENC_SAMPLERATE, 12000);
-        break;
-    case CAudioParam::AS_24KHZ:
-        r = aacEncoder_SetParam(hEncoder, AACENC_SAMPLERATE, 24000);
-        break;
-    case CAudioParam::AS_16KHZ:
-    case CAudioParam::AS_32KHZ:
-    case CAudioParam::AS_9_6KHZ:
-    case CAudioParam::AS_19_2KHZ:
-    case CAudioParam::AS_38_4KHZ:
-    case CAudioParam::AS_48KHZ:
-        ;
-    }
-    if(r!=AACENC_OK) {
-        cerr << "error setting sample rate " << hex << r << dec << endl;
+    case CAudioParam::AS_12KHZ: iEncCoreSampleRate = 12000; break;
+    case CAudioParam::AS_24KHZ: iEncCoreSampleRate = 24000; break;
+    case CAudioParam::AS_48KHZ: iEncCoreSampleRate = 48000; break; /* DRM+ */
+    default:
+        cerr << "fdk-aac: unsupported AAC sample rate" << endl;
         return false;
     }
+
+    const bool bSbr = (AudioParam.eSBRFlag == CAudioParam::SB_USED)
+                      || (AudioParam.eAudioMode == CAudioParam::AM_P_STEREO);
+    UINT aot = AOT_AAC_LC;
+    CHANNEL_MODE chMode = MODE_1;
+    UINT nCh = 1;
     switch (AudioParam.eAudioMode) {
     case CAudioParam::AM_MONO:
-        r = aacEncoder_SetParam(hEncoder, AACENC_CHANNELMODE, MODE_1);
+        aot = bSbr ? AOT_SBR : AOT_AAC_LC;
         break;
-    case CAudioParam::AM_P_STEREO:
-        r = aacEncoder_SetParam(hEncoder, AACENC_CHANNELMODE, MODE_2);
+    case CAudioParam::AM_P_STEREO:  /* stereo input, mono core + SBR + PS */
+        aot = AOT_PS; chMode = MODE_2; nCh = 2;
         break;
     case CAudioParam::AM_STEREO:
-        r = aacEncoder_SetParam(hEncoder, AACENC_CHANNELMODE, MODE_2);
-       break;
-    case CAudioParam::AM_RESERVED:;
-    //case CAudioParam::AM_SURROUND:
-        //r = aacEncoder_SetParam(hEncoder, AACENC_CHANNELMODE, MODE_6_1); // TODO provide more options ES 201 980 6.4.3.10
-    }
-    if(r!=AACENC_OK) {
-        cerr << "error setting channel mode " << hex << r << dec << endl;
+        aot = bSbr ? AOT_SBR : AOT_AAC_LC; chMode = MODE_2; nCh = 2;
+        break;
+    default:
+        cerr << "fdk-aac: unsupported audio mode" << endl;
         return false;
     }
-    r = aacEncoder_SetParam(hEncoder, AACENC_TRANSMUX, TT_MP4_ADTS); // ADTS
-    if(r!=AACENC_OK) {
-        cerr << "error setting transport type " << hex << r << dec << endl;
+    /* with SBR the encoder input runs at twice the AAC core rate */
+    const UINT inputRate = UINT(iEncCoreSampleRate * (bSbr ? 2 : 1));
+
+    AACENC_ERROR r = aacEncOpen(&hEncoder, 0, nCh); /* all modules */
+    if (r != AACENC_OK) {
+        cerr << "fdk-aac: error opening encoder " << hex << r << dec << endl;
+        hEncoder = nullptr;
         return false;
     }
-    r = aacEncoder_SetParam(hEncoder, AACENC_BITRATE,  128000);
-    if(r!=AACENC_OK) {
-        cerr << "error setting bitrate " << hex << r << dec << endl;
-        return false;
+
+    struct { AACENC_PARAM p; UINT v; const char* n; } params[] = {
+        { AACENC_AOT,            aot,                                   "AOT" },
+        { AACENC_TRANSMUX,       UINT(bEncDrm ? TT_DRM : TT_MP4_ADTS),  "transport" },
+        { AACENC_GRANULE_LENGTH, UINT(bEncDrm ? 960 : 1024),            "granule length" },
+        { AACENC_SAMPLERATE,     inputRate,                             "sample rate" },
+        { AACENC_CHANNELMODE,    UINT(chMode),                          "channel mode" },
+        { AACENC_CHANNELORDER,   1,                                     "channel order" },
+        /* provisional bitrate, the real one comes from EncSetBitrate() */
+        { AACENC_BITRATE,        UINT(bEncDrm ? 16000 * nCh : 64000 * nCh), "bitrate" },
+    };
+    for (const auto& prm : params) {
+        r = aacEncoder_SetParam(hEncoder, prm.p, prm.v);
+        if (r != AACENC_OK) {
+            cerr << "fdk-aac: error setting " << prm.n << " = " << prm.v << ": " << hex << r << dec << endl;
+            EncClose();
+            return false;
+        }
     }
-    //r = aacEncoder_SetParam(hEncoder, AACENC_GRANULE_LENGTH, 960); // might let us set frameLength
-    //if(r!=AACENC_OK) {
-    //    cerr << "error setting frame length " << hex << r << dec << endl;
-    //    return false;
-   // }
+
+    if (bEncDrm && bSbr) {
+        /* DRM receivers may tune in at any time: SBR header in every AU */
+        r = aacEncoder_SetParam(hEncoder, AACENC_HEADER_PERIOD, 1);
+        if (r != AACENC_OK) {
+            cerr << "fdk-aac: error setting header period: " << hex << r << dec << endl;
+            EncClose();
+            return false;
+        }
+    }
+
     r = aacEncEncode(hEncoder, nullptr, nullptr, nullptr, nullptr);
-    if(r!=AACENC_OK) {
-        cerr << "error initialising encoder " << hex << r << dec << endl;
+    if (r != AACENC_OK) {
+        cerr << "fdk-aac: error initialising encoder " << hex << r << dec << endl;
+        EncClose();
         return false;
     }
     AACENC_InfoStruct info;
     r = aacEncInfo(hEncoder, &info);
-    if(r!=AACENC_OK) {
-        cerr << "error getting encoder info " << hex << r << dec << endl;
+    if (r != AACENC_OK) {
+        cerr << "fdk-aac: error getting encoder info " << hex << r << dec << endl;
+        EncClose();
         return false;
     }
-    cerr << "maxOutBufBytes " << info.maxOutBufBytes << endl;
-    cerr << "maxAncBytes " << info.maxAncBytes << endl;
-    cerr << "inputChannels " << info.inputChannels << endl;
-    cerr << "frameLength " << info.frameLength << endl;
-    cerr << "maxAncBytes " << info.maxAncBytes << endl;
-    lNumSampEncIn=info.frameLength * info.inputChannels;
-    lMaxBytesEncOut=info.maxOutBufBytes; // TODO
+
+    /* samples per call, all channels (DREAM divides by the channel count) */
+    lNumSampEncIn = info.frameLength * info.inputChannels;
+    lMaxBytesEncOut = info.maxOutBufBytes;
+    encInBuf.assign(lNumSampEncIn, 0);
+    encOutBuf.assign(lMaxBytesEncOut, 0);
     return true;
 }
 
 int
 FdkAacCodec::Encode(CVector<_SAMPLE>& vecsEncInData, unsigned long lNumSampEncIn, CVector<uint8_t>& vecsEncOutData, unsigned long lMaxBytesEncOut)
 {
-    int bytesEncoded = 0;
-    static INT_PCM inputBuffer[8*2048];
-    static UCHAR outputBuffer[8192];
-    
-    static void* inBuffer[] = { inputBuffer };
-    static INT inBufferIds[] = { IN_AUDIO_DATA };
-    static INT inBufferSize[] = { sizeof(inputBuffer) };
-    static INT inBufferElSize[] = { sizeof(INT_PCM) };
-    static void* outBuffer[] = { outputBuffer };
-    static INT outBufferIds[] = { OUT_BITSTREAM_DATA };
-    static INT outBufferSize[] = { sizeof(outputBuffer) };
-    static INT outBufferElSize[] = { sizeof(UCHAR) };
-
-    AACENC_BufDesc inBufDesc;
-    AACENC_BufDesc outBufDesc;
-
-    inBufDesc.numBufs = sizeof(inBuffer)/sizeof(void*);
-    inBufDesc.bufs = (void**)&inBuffer;
-    inBufDesc.bufferIdentifiers = inBufferIds;
-    inBufDesc.bufSizes = inBufferSize;
-    inBufDesc.bufElSizes = inBufferElSize;
-
-    outBufDesc.numBufs = sizeof(outBuffer)/sizeof(void*);
-    outBufDesc.bufs = (void**)&outBuffer;
-    outBufDesc.bufferIdentifiers = outBufferIds;
-    outBufDesc.bufSizes = outBufferSize;
-    outBufDesc.bufElSizes = outBufferElSize;
-
-    AACENC_InArgs inargs; 
-    AACENC_OutArgs outargs;
-
-    inargs.numInSamples = lNumSampEncIn;
-
-    for (unsigned int i=0; i<lNumSampEncIn; i++)
-       inputBuffer[i] = vecsEncInData[i];
-
-    if (hEncoder != nullptr) {
-      AACENC_ERROR err = aacEncEncode(hEncoder, &inBufDesc, &outBufDesc, &inargs, &outargs);
-      if (err != AACENC_OK)
-        cerr<<"FDK AAC Encoder error "<<err<<endl;
-      bytesEncoded = outargs.numOutBytes;
-      //cerr<<"encoded "<<outargs.numInSamples<<" samples and produced "<<bytesEncoded<<" bytes."<<endl;
-      if (bytesEncoded > lMaxBytesEncOut) {
-        cerr<<"Output buffer too small!"<<endl;
-	return 0;
-      }
-
-      //cerr<<"Encoded audio: ";
-      for (int i=0; i<bytesEncoded; i++) {
-        //if (i<100 || i>bytesEncoded-100) cerr<<hex<<setw(2)<<setfill('0')<<int(outputBuffer[i]);
-        //if (i==100) cerr<<" ... ";
-        vecsEncOutData[i] = outputBuffer[i]; 
-      }
-      //cerr<<endl;
+    if (hEncoder == nullptr || encInBuf.empty())
+        return 0;
+    if (lNumSampEncIn > encInBuf.size()) {
+        cerr << "fdk-aac: too many input samples " << lNumSampEncIn << endl;
+        return 0;
     }
+
+    for (unsigned long i = 0; i < lNumSampEncIn; i++)
+        encInBuf[i] = INT_PCM(vecsEncInData[int(i)]);
+
+    void* inPtr = encInBuf.data();
+    INT inId = IN_AUDIO_DATA;
+    INT inSize = INT(lNumSampEncIn * sizeof(INT_PCM));
+    INT inElSize = sizeof(INT_PCM);
+    void* outPtr = encOutBuf.data();
+    INT outId = OUT_BITSTREAM_DATA;
+    INT outSize = INT(encOutBuf.size());
+    INT outElSize = sizeof(UCHAR);
+
+    AACENC_BufDesc inBufDesc = { 1, &inPtr, &inId, &inSize, &inElSize };
+    AACENC_BufDesc outBufDesc = { 1, &outPtr, &outId, &outSize, &outElSize };
+    AACENC_InArgs inargs = {};
+    AACENC_OutArgs outargs = {};
+    inargs.numInSamples = INT(lNumSampEncIn);
+
+    AACENC_ERROR err = aacEncEncode(hEncoder, &inBufDesc, &outBufDesc, &inargs, &outargs);
+    if (err != AACENC_OK) {
+        cerr << "fdk-aac: encoder error " << hex << err << dec << endl;
+        return 0;
+    }
+    const int bytesEncoded = outargs.numOutBytes;
+    if (bytesEncoded <= 0)
+        return 0; /* encoder still filling its look-ahead */
+    if (unsigned(bytesEncoded) > lMaxBytesEncOut || bytesEncoded > vecsEncOutData.Size()) {
+        cerr << "fdk-aac: output buffer too small" << endl;
+        return 0;
+    }
+    for (int i = 0; i < bytesEncoded; i++)
+        vecsEncOutData[i] = encOutBuf[size_t(i)];
     return bytesEncoded;
 }
 
@@ -655,9 +645,31 @@ FdkAacCodec::EncClose()
 void
 FdkAacCodec::EncSetBitrate(int iBitRate)
 {
-    if (hEncoder != nullptr)
-	{
-        aacEncoder_SetParam(hEncoder, AACENC_BITRATE, UINT(iBitRate));
+    if (hEncoder == nullptr || iBitRate <= 0)
+        return;
+    UINT rate = UINT(iBitRate);
+    if (bEncDrm) {
+        /* DREAM's bitrate is the audio payload per frame without the
+           aac_crc_bits byte. fdk counts the CRC byte as part of each AU, and
+           its CBR mode lets a single AU exceed the average by one byte (the
+           minimum bit reservoir), which over a run of frames could overflow
+           the audio super frame. Using the payload rate itself as the AU
+           rate (CRC byte included) makes the largest possible AU
+           (average + 1 byte) exactly payload + CRC, so every AU fits its
+           slot. Round to whole bytes per 960-sample frame. */
+        const long bitsPerFrame = (long(iBitRate) * 960 / iEncCoreSampleRate) & ~7L;
+        rate = UINT(bitsPerFrame * iEncCoreSampleRate / 960);
+    }
+    AACENC_ERROR r = aacEncoder_SetParam(hEncoder, AACENC_BITRATE, rate);
+    if (r == AACENC_OK && bEncDrm) {
+        /* no AU above the average: frame sizes must fit the super frame */
+        r = aacEncoder_SetParam(hEncoder, AACENC_PEAK_BITRATE, rate);
+    }
+    if (r == AACENC_OK) {
+        r = aacEncEncode(hEncoder, nullptr, nullptr, nullptr, nullptr); /* re-init */
+    }
+    if (r != AACENC_OK) {
+        cerr << "fdk-aac: cannot set bitrate " << rate << " bit/s: " << hex << r << dec << endl;
     }
 }
 
