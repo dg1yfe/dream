@@ -119,6 +119,7 @@ set(DREAM_CORE_SOURCES
     resample/cspectrumresample.cpp
     resample/caudioresample.cpp
     sourcedecoders/reverb.cpp
+    sourcedecoders/concealment.cpp
     sourcedecoders/caudioreverb.cpp
     tuner.cpp
     sound/soundfactory.cpp

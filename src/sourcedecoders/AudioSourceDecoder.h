@@ -37,6 +37,7 @@
 #include "AudioCodec.h"
 #include "../MSC/audiosuperframe.h"
 #include "reverb.h"
+#include "concealment.h"
 
 #ifdef HAVE_SPEEX
 # include "../resample/speexresampler.h"
@@ -120,6 +121,12 @@ protected:
     virtual void ProcessDataInternal(CParameter& Parameters);
     void CloseDecoder();
     Reverb reverb;
+    /* Concealment of short losses (before Reverb fades out to silence) */
+    CPcmConcealer concealer;
+    bool bConceal;          /* DREAM_CONCEAL=0 disables it (A/B tests) */
+    bool bLastBlockPlayed;  /* last block went to the output as audio */
+    int iTestBadStart, iTestBadCount, iTestBadPeriod; /* DREAM_TEST_BAD_FRAMES */
+    long lFrameCount;
 };
 
 #endif // AUDIOSOURCEDECODER_H

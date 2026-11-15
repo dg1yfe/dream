@@ -121,4 +121,5 @@ SOURCES += \
     ../src/resample/cspectrumresample.cpp \
     ../src/resample/caudioresample.cpp \
     ../src/sourcedecoders/reverb.cpp \
+    ../src/sourcedecoders/concealment.cpp \
     ../src/sourcedecoders/caudioreverb.cpp

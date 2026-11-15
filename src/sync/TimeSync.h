@@ -97,6 +97,8 @@ public:
 	void StartAcquisition();
 	void StopTimingAcqu() {bTimingAcqu = false;}
 	void StopRMDetAcqu() {bRobModAcqu = false;}
+	/* a robustness mode was detected in this acquisition attempt */
+	bool IsRModeFound() const {return bRModeFound;}
 
 protected:
 	int							iSampleRate;
@@ -135,6 +137,7 @@ protected:
 	bool					bInitTimingAcqu;
 	bool					bTimingAcqu;
 	bool					bRobModAcqu;
+	bool					bRModeFound;
 	bool					bAcqWasActive;
 
 	int							iTiSyncInitCnt;

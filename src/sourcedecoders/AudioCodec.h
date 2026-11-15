@@ -51,7 +51,10 @@ public:
     CAudioCodec();
     virtual ~CAudioCodec();
 	/* Decoder */
-	enum EDecError { DECODER_ERROR_OK, DECODER_ERROR_CRC, DECODER_ERROR_CORRUPTED, DECODER_ERROR_UNKNOWN };
+	/* DECODER_ERROR_CONCEALED: the frame was bad, but the decoder filled the
+	   output with its own concealment (played for short losses only) */
+	enum EDecError { DECODER_ERROR_OK, DECODER_ERROR_CRC, DECODER_ERROR_CORRUPTED, DECODER_ERROR_UNKNOWN,
+	                 DECODER_ERROR_CONCEALED };
 	virtual std::string DecGetVersion() = 0;
 	virtual bool CanDecode(CAudioParam::EAudCod eAudioCoding) = 0;
     virtual bool DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate) = 0;
