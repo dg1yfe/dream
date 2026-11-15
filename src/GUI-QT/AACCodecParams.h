@@ -27,6 +27,8 @@
 \******************************************************************************/
 
 #include <QDialog>
+#include <QTimer>
+#include <functional>
 #include "ui_AACCodecParams.h"
 #include "../Parameter.h"
 #include "../util/Settings.h"
@@ -36,7 +38,10 @@ class AACCodecParams : public QDialog, public Ui_AACCodecParams
 	Q_OBJECT
 
 public:
-    AACCodecParams(CSettings&, CParameter&, int iShortID, QWidget* parent = nullptr);
+    /* payloadRate: returns the AAC audio payload rate (bit/s) for the
+       current channel settings (for the "auto" channel mode display) */
+    AACCodecParams(CSettings&, CParameter&, int iShortID, QWidget* parent = nullptr,
+                   std::function<int()> payloadRate = std::function<int()>());
 	virtual ~AACCodecParams();
 	void Toggle(void);
 	void Show(bool bShow);
@@ -51,9 +56,19 @@ protected:
 	bool			bLastPositionValid;
 	void			GetDialogPosition(void);
 	virtual void	reject();
+	virtual void	showEvent(QShowEvent*);
+
+	/* "Auto (recommended)": parametric stereo below PS_RECOMMENDED_BELOW_BITRATE */
+	enum { ID_CHANNELS_AUTO = CAudioParam::AM_RESERVED + 1 };
+	std::function<int()> payloadRate;
+	bool			bCanPS;
+	QRadioButton*	RadioButtonChannelsAuto;
+	QLabel*			LabelModeInfo;
+	QTimer			TimerModeInfo;
 
 public slots:
 	void OnButtonGroupChannels(int iID);
     void OnButtonGroupSampleRate(int iID);
     void OnCheckBoxSBR(bool checked);
+    void UpdateModeInfo();
 };

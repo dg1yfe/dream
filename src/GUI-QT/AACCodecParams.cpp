@@ -42,13 +42,26 @@
 #endif
 
 AACCodecParams::AACCodecParams(CSettings& Settings, CParameter& Parameters,
-	int iShortID, QWidget* parent)
+	int iShortID, QWidget* parent, std::function<int()> payloadRate)
 	:
 	QDialog(parent), Settings(Settings), Parameters(Parameters),
-	iShortID(iShortID), bWasVisible(false), bLastPositionValid(false)
+	iShortID(iShortID), bWasVisible(false), bLastPositionValid(false),
+	payloadRate(payloadRate), bCanPS(false), RadioButtonChannelsAuto(nullptr),
+	LabelModeInfo(nullptr), TimerModeInfo()
 {
 	setAttribute(Qt::WA_QuitOnClose, false);
 	setupUi(this);
+
+    /* "Auto (recommended)" channel mode, first in the row, and a line that
+       shows the mode in effect (or a recommendation) */
+    RadioButtonChannelsAuto = new QRadioButton(tr("Auto (recommended)"), GroupBoxChannels);
+    RadioButtonChannelsAuto->setToolTip(tr("Parametric stereo below %1 kbit/s audio payload "
+        "(if the encoder supports it), stereo above").arg(PS_RECOMMENDED_BELOW_BITRATE / 1000));
+    if (QBoxLayout* box = qobject_cast<QBoxLayout*>(GroupBoxChannels->layout()))
+        box->insertWidget(0, RadioButtonChannelsAuto);
+    LabelModeInfo = new QLabel(this);
+    LabelModeInfo->setWordWrap(true);
+    gridLayout->addWidget(LabelModeInfo, gridLayout->rowCount(), 0, 1, -1);
 
 	/* Recover window size and position */
 	CWinGeom s;
@@ -59,7 +72,7 @@ AACCodecParams::AACCodecParams(CSettings& Settings, CParameter& Parameters,
     /* What the active AAC encoder can do: SBR and parametric stereo need the
        (patched) fdk-aac, faac only does AAC-LC */
     const bool bCanSBR = CAudioCodec::EncoderCanSBR(CAudioParam::AC_AAC);
-    const bool bCanPS = CAudioCodec::EncoderCanPS(CAudioParam::AC_AAC);
+    bCanPS = CAudioCodec::EncoderCanPS(CAudioParam::AC_AAC);
     QString strWebSite(bCanSBR
         ? "https://www.iis.fraunhofer.de/en/ff/amm/prod/audiocodec/audiocodecs/heaac.html"
         : "https://github.com/knik0/faac");
@@ -74,13 +87,16 @@ AACCodecParams::AACCodecParams(CSettings& Settings, CParameter& Parameters,
         Parameters.Service[iShortID].AudioParam.eSBRFlag = CAudioParam::SB_NOT_USED;
         Parameters.Service[iShortID].AudioParam.bParamChanged = true;
     }
-    if (!bCanPS && Parameters.Service[iShortID].AudioParam.eAudioMode == CAudioParam::AM_P_STEREO)
+    if (!bCanPS && !Parameters.Service[iShortID].AudioParam.bAutoStereo
+            && Parameters.Service[iShortID].AudioParam.eAudioMode == CAudioParam::AM_P_STEREO)
     {
         Parameters.Service[iShortID].AudioParam.eAudioMode = CAudioParam::AM_STEREO;
         Parameters.Service[iShortID].AudioParam.bParamChanged = true;
     }
 	/* Channels */
-    switch (Parameters.Service[iShortID].AudioParam.eAudioMode)
+    if (Parameters.Service[iShortID].AudioParam.bAutoStereo)
+        RadioButtonChannelsAuto->setChecked(true);
+    else switch (Parameters.Service[iShortID].AudioParam.eAudioMode)
 	{
     case CAudioParam::AM_MONO:
 		RadioButtonChannelsMono->setChecked(true);
@@ -128,6 +144,12 @@ AACCodecParams::AACCodecParams(CSettings& Settings, CParameter& Parameters,
     ButtonGroupChannels->addButton(RadioButtonChannelsMono, CAudioParam::AM_MONO);
     ButtonGroupChannels->addButton(RadioButtonChannelsStereo, CAudioParam::AM_STEREO);
     ButtonGroupChannels->addButton(RadioButtonChannelsParametricStereo, CAudioParam::AM_P_STEREO);
+    ButtonGroupChannels->addButton(RadioButtonChannelsAuto, ID_CHANNELS_AUTO);
+
+    /* the payload rate follows the channel settings of the transmitter */
+    connect(&TimerModeInfo, SIGNAL(timeout()), this, SLOT(UpdateModeInfo()));
+    TimerModeInfo.start(1000);
+    UpdateModeInfo();
     //ButtonGroupChannels->addButton(RadioButtonChannelsSurround, CAudioParam::AM_SURROUND);
 
     ButtonGroupSampleRate->addButton(RadioButton12kHz, CAudioParam::AS_12KHZ);
@@ -162,9 +184,55 @@ void AACCodecParams::reject()
 void AACCodecParams::OnButtonGroupChannels(int iID)
 {
     Parameters.Lock();
-    Parameters.Service[iShortID].AudioParam.eAudioMode = static_cast<CAudioParam::EAudioMode>(iID);
-	Parameters.Service[iShortID].AudioParam.bParamChanged = true;
+    CAudioParam& AudioParam = Parameters.Service[iShortID].AudioParam;
+    AudioParam.bAutoStereo = (iID == ID_CHANNELS_AUTO);
+    /* "auto": the encoder sets the mode in effect at its next start */
+    AudioParam.eAudioMode = AudioParam.bAutoStereo ? CAudioParam::AM_STEREO
+                                                   : static_cast<CAudioParam::EAudioMode>(iID);
+	AudioParam.bParamChanged = true;
 	Parameters.Unlock();
+    UpdateModeInfo();
+}
+
+void AACCodecParams::showEvent(QShowEvent* e)
+{
+    UpdateModeInfo();
+    QDialog::showEvent(e);
+}
+
+void AACCodecParams::UpdateModeInfo()
+{
+    if (LabelModeInfo == nullptr || (sender() == &TimerModeInfo && !isVisible()))
+        return;
+    const int iRate = payloadRate ? payloadRate() : -1;
+    Parameters.Lock();
+    const CAudioParam AudioParam = Parameters.Service[iShortID].AudioParam;
+    Parameters.Unlock();
+    const QString strRate = iRate >= 0 ? tr("%1 kbit/s").arg(iRate / 1000.0, 0, 'f', 1) : tr("unknown");
+    const bool bLow = iRate >= 0 && iRate < PS_RECOMMENDED_BELOW_BITRATE;
+    const CAudioParam::EAudioMode eMode = (iRate >= 0 || !AudioParam.bAutoStereo)
+            ? CAudioSourceEncoderImplementation::EffectiveAudioMode(AudioParam, iRate, bCanPS)
+            : CAudioParam::AM_RESERVED;
+    QString strMode;
+    switch (eMode)
+    {
+    case CAudioParam::AM_MONO: strMode = tr("Mono"); break;
+    case CAudioParam::AM_P_STEREO: strMode = tr("Parametric stereo"); break;
+    case CAudioParam::AM_STEREO: strMode = tr("Stereo"); break;
+    default: strMode = tr("decided when the transmitter starts");
+    }
+    QString strInfo = tr("In effect: %1%2 (audio payload %3)")
+            .arg(strMode, AudioParam.bAutoStereo ? tr(", auto") : QString(), strRate);
+    QString strStereoTip;
+    if (!AudioParam.bAutoStereo && AudioParam.eAudioMode == CAudioParam::AM_STEREO && bCanPS && bLow)
+    {
+        strStereoTip = tr("Below %1 kbit/s audio payload parametric stereo sounds better than "
+                          "stereo: Parametric stereo or Auto is recommended.")
+                .arg(PS_RECOMMENDED_BELOW_BITRATE / 1000);
+        strInfo += "<br><b>" + strStereoTip + "</b>";
+    }
+    LabelModeInfo->setText(strInfo);
+    RadioButtonChannelsStereo->setToolTip(strStereoTip);
 }
 
 void AACCodecParams::OnButtonGroupSampleRate(int iID)

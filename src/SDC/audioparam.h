@@ -44,7 +44,7 @@ public:
             eOPUSBandwidth(OB_FB), eOPUSSubCod(OS_SILK), eOPUSChan(OC_STEREO),
             eOPUSSignal(OG_MUSIC), eOPUSApplication(OA_AUDIO),
             bOPUSForwardErrorCorrection(false), bOPUSRequestReset(false),
-            bParamChanged(false)
+            bParamChanged(false), bAutoStereo(false)
     {
     }
 
@@ -68,7 +68,8 @@ public:
             eOPUSApplication(ap.eOPUSApplication),
             bOPUSForwardErrorCorrection(ap.bOPUSForwardErrorCorrection),
             bOPUSRequestReset(ap.bOPUSRequestReset),
-            bParamChanged(ap.bParamChanged)
+            bParamChanged(ap.bParamChanged),
+            bAutoStereo(ap.bAutoStereo)
     {
     }
     CAudioParam& operator=(const CAudioParam& ap)
@@ -91,6 +92,7 @@ public:
         bOPUSForwardErrorCorrection = ap.bOPUSForwardErrorCorrection;
         bOPUSRequestReset = ap.bOPUSRequestReset;
         bParamChanged = ap.bParamChanged;
+        bAutoStereo = ap.bAutoStereo;
         return *this;
     }
 
@@ -128,6 +130,11 @@ public:
 
     /* CAudioParam has changed */
     bool bParamChanged;
+
+    /* Transmitter only, not signalled: the channel mode is "auto". The
+       encoder then chooses parametric stereo or stereo from the audio
+       payload rate and writes the mode in effect to eAudioMode */
+    bool bAutoStereo;
 
     /* This function is needed for detection changes in the class */
     bool operator!=(const CAudioParam AudioParam)

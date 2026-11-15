@@ -243,6 +243,19 @@ bool CDRMTransmitter::CanSoftStopExit() {
   return false; /* Signal to continue the normal operation */
 }
 
+int CDRMTransmitter::EstimateAudioPayloadRate() {
+  Parameters.Lock();
+  CParameter p(Parameters);
+  Parameters.Unlock();
+  p.InitCellMapTable(p.GetWaveMode(), p.GetSpectrumOccup());
+  CMSCMLCEncoder enc;
+  CSingleBuffer<_COMPLEX> buf;
+  enc.Init(p, buf);
+  return CAudioSourceEncoderImplementation::AACPayloadRate(
+      p.iNumDecodedBitsMSC, p.Service[0].AudioParam.eAudioSamplRate,
+      AudioSourceEncoder.UsingTextMessage());
+}
+
 void CDRMTransmitter::Init() {
 
   /* Fetch new sample rate if any */
@@ -448,14 +461,24 @@ void CDRMTransmitter::LoadSettings() {
       Service.AudioParam.eAudioCoding = CAudioParam::AC_OPUS;
     }
 
-    /* AAC audio mode: mono, pstereo (parametric stereo) or stereo */
-    value = s.Get(service, "aac_mode", string("mono"));
+    /* AAC audio mode: auto (default), mono, pstereo (parametric stereo) or
+       stereo. "auto" uses parametric stereo below PS_RECOMMENDED_BELOW_BITRATE
+       if the encoder can, else stereo. Settings written before "auto" existed
+       (no aac_mode_format key) stored "stereo" for every stereo service, so
+       there "stereo" (and a missing key) maps to auto; "mono" and "pstereo"
+       stay as they were. */
+    value = s.Get(service, "aac_mode", string("auto"));
+    const bool bLegacyMode = s.Get(service, "aac_mode_format", int(1)) < 2;
+    Service.AudioParam.bAutoStereo = false;
     if (value == "mono") {
       Service.AudioParam.eAudioMode = CAudioParam::AM_MONO;
     } else if (value == "pstereo") {
       Service.AudioParam.eAudioMode = CAudioParam::AM_P_STEREO;
-    } else if (value == "stereo") {
+    } else if (value == "stereo" && !bLegacyMode) {
       Service.AudioParam.eAudioMode = CAudioParam::AM_STEREO;
+    } else {
+      Service.AudioParam.eAudioMode = CAudioParam::AM_STEREO;
+      Service.AudioParam.bAutoStereo = true;
     }
 
     /* AAC core sample rate: 12000 or 24000 Hz */
@@ -736,7 +759,8 @@ void CDRMTransmitter::SaveSettings() {
     }
     s.Put(service, "codec", value);
 
-    /* AAC audio mode, core sample rate and SBR */
+    /* AAC audio mode (the choice, not the mode in effect), core sample rate
+       and SBR */
     switch (Service.AudioParam.eAudioMode) {
     case CAudioParam::AM_P_STEREO:
       value = "pstereo";
@@ -747,7 +771,10 @@ void CDRMTransmitter::SaveSettings() {
     default:
       value = "mono";
     }
+    if (Service.AudioParam.bAutoStereo)
+      value = "auto";
     s.Put(service, "aac_mode", value);
+    s.Put(service, "aac_mode_format", int(2));
     s.Put(service, "aac_samplerate",
           Service.AudioParam.eAudioSamplRate == CAudioParam::AS_12KHZ ? 12000 : 24000);
     s.Put(service, "sbr", int(Service.AudioParam.eSBRFlag == CAudioParam::SB_USED));

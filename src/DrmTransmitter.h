@@ -53,6 +53,9 @@ public:
     void LoadSettings();
     void SaveSettings();
     void Init();
+    /* AAC audio payload rate (bit/s) for the current channel settings,
+       computed without (re)starting the transmitter */
+    int EstimateAudioPayloadRate();
 
     CAudioSourceEncoder *GetAudSrcEnc()
     {

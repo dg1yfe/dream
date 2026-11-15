@@ -145,6 +145,11 @@ bool CTx::isOutputAmplified()
     return tx.GetTransData()->GetAmplifiedOutput();
 }
 
+int CTx::GetAudioPayloadRate()
+{
+    return tx.EstimateAudioPayloadRate();
+}
+
 bool CTx::CanEncode(int n)
 {
     return tx.GetAudSrcEnc()->CanEncode(CAudioParam::EAudCod(n));

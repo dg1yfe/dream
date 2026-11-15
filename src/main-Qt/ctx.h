@@ -27,6 +27,8 @@ public:
     virtual bool isHighQualityIQ();
     virtual bool isOutputAmplified();
     virtual bool CanEncode(int);
+    /* AAC audio payload rate (bit/s) for the current channel settings */
+    virtual int GetAudioPayloadRate();
     virtual _REAL GetCarrierOffset();
     virtual int GetLevelMeter();
     virtual bool GetTransmissionStatus(std::string, _REAL);

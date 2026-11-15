@@ -944,7 +944,8 @@ void TransmDialog::OnButtonCodec()
         {
             const int iShortID = 0; // TODO
             CParameter& Parameters = *tx.GetParameters();
-            pAACCodecDlg = new AACCodecParams(Settings, Parameters, iShortID, this);
+            pAACCodecDlg = new AACCodecParams(Settings, Parameters, iShortID, this,
+                [this]() { return tx.GetAudioPayloadRate(); });
         }
         /* Toggle the visibility */
         if (pAACCodecDlg)
