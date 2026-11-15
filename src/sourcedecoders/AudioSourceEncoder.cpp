@@ -29,9 +29,6 @@
 #include "AudioSourceEncoder.h"
 #include <iostream>
 #include <algorithm>
-#ifdef HAVE_LIBFDK_AAC
-# include "fdk_aac_codec.h"
-#endif
 
 
 /* Signal (SDC data entity type 9) what the encoder really produces. SBR is
@@ -145,6 +142,10 @@ CAudioSourceEncoderImplementation::ProcessDataInternal(CParameter& Parameters,
         for (int i = 0; i < iNumChannels; i++)
             ResampleObj[i].Resample(vecTempResBufIn[i], vecTempResBufOut[i]);
 
+        /* Bytes (CRC included) left in this audio super frame, for encoders
+           that take a frame size range */
+        int iSfRemaining = iAudioPayloadLen + iNumAudioFrames * iCrcBytes;
+
         /* Split data in individual audio blocks */
         for (int j = 0; j < iNumAudioFrames; j++)
         {
@@ -159,23 +160,45 @@ CAudioSourceEncoderImplementation::ProcessDataInternal(CParameter& Parameters,
                             Real2Sample(vecTempResBufOut[i][j * lNumSampEncIn + k]);
             }
 
-#ifdef HAVE_LIBFDK_AAC
-            /* fdk-aac (DRM): fill the audio super frame exactly. The length
-               of the last frame is implicit (remaining payload) and SBR data
-               is read backwards from the end of each frame, so no padding may
-               follow a frame. */
-            if (bDrmSf)
+            /* Encoders with exact frame sizes (fdk-aac, libxaac): fill the
+               audio super frame exactly. The length of the last frame is
+               implicit (remaining payload) and SBR data is read backwards from
+               the end of each frame, so no padding may follow a frame. */
+            if (bDrmSf && codec->EncHasFrameSizeRange())
             {
-                FdkAacCodec* fdk = dynamic_cast<FdkAacCodec*>(codec);
-                if (fdk != nullptr)
+                /* A frame may borrow what the earlier frames of this super frame
+                   saved, plus half an average frame; every later frame keeps at
+                   least half an average frame (and its higher protected part);
+                   the last frame takes exactly the rest. */
+                const int iAvg = iAudioPayloadLen / iNumAudioFrames + iCrcBytes;
+                const int iLeft = iNumAudioFrames - j; /* this frame included */
+                const int iMinF = std::max(iAvg / 2, iNumHigherProtectedBytes + iCrcBytes + 1);
+                /* a later frame can take at most twice the average (and what the encoder
+                   can write), so the rest of the super frame always stays reachable */
+                const int iCapF = std::min(2 * iAvg, int(lMaxBytesEncOut));
+                int iMax = iSfRemaining - (iLeft - 1) * iMinF;
+                int iMin = iMinF;
+                if (iLeft > 1)
                 {
-                    const int iSlot = iAudioPayloadLen / iNumAudioFrames;
-                    const int iBytes = (j < iNumAudioFrames - 1) ? iSlot
-                            : iAudioPayloadLen - (iNumAudioFrames - 1) * iSlot;
-                    fdk->EncSetNextFrameSize(unsigned(iBytes + iCrcBytes));
+                    const int iCredit = iSfRemaining - iLeft * iAvg;
+                    iMax = std::min(iMax, iAvg + iCredit + iAvg / 2);
+                    iMin = std::max(iMinF, iSfRemaining - (iLeft - 1) * iCapF);
                 }
+                else
+                {
+                    iMin = iMax = iSfRemaining;
+                }
+                iMax = std::min(iMax, int(lMaxBytesEncOut));
+                iMin = std::min(iMin, iMax);
+                codec->EncSetNextFrameSizeRange(unsigned(iMin), unsigned(iMax));
             }
-#endif
+            else if (bDrmSf && codec->EncHasExactFrameSize())
+            {
+                const int iSlot = iAudioPayloadLen / iNumAudioFrames;
+                const int iBytes = (j < iNumAudioFrames - 1) ? iSlot
+                        : iAudioPayloadLen - (iNumAudioFrames - 1) * iSlot;
+                codec->EncSetNextFrameSize(unsigned(iBytes + iCrcBytes));
+            }
             /* Actual encoding */
             bytesEncoded = codec->Encode(vecsEncInData, lNumSampEncIn * iNumChannels, vecsTmpData, lMaxBytesEncOut);
             if (bytesEncoded > 0)
@@ -189,6 +212,7 @@ CAudioSourceEncoderImplementation::ProcessDataInternal(CParameter& Parameters,
 
                 /* Store block lengths for boarders in AAC super-frame-header */
                 veciFrameLength[j] = bytesEncoded - iCrcBytes;
+                iSfRemaining -= bytesEncoded;
             }
             else
             {
@@ -819,12 +843,8 @@ CAudioSourceEncoderImplementation::InitRateControl(int iNominalBitRate)
     rPeakFill = rCeilPeakFill = 0;
     lRcSuperFrames = lRcOverflows = 0;
     dRcRateSum = 0;
-#ifdef HAVE_LIBFDK_AAC
-    /* fdk-aac (DRM) gets the exact size of every frame and never overflows */
-    bRateControl = dynamic_cast<FdkAacCodec*>(codec) == nullptr;
-#else
-    bRateControl = true;
-#endif
+    /* encoders with exact frame sizes (fdk-aac DRM, libxaac) never overflow */
+    bRateControl = !codec->EncHasExactFrameSize();
     iEncBitRate = bRateControl ? iNominalBitRate * RC_START_PERCENT / 100 : iNominalBitRate;
     codec->EncSetBitrate(iEncBitRate);
     if (bRateControl)

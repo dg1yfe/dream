@@ -1,13 +1,16 @@
 #!/bin/sh
 # Build Google/Ittiam libxaac's AAC encoder (AAC-LC, HE-AAC v1/v2, also LD/ELD/USAC)
-# for DREAM on macOS. SPIKE ONLY: DREAM does not use it yet (docs/research/xaac-spike.md,
-# docs/research/xaac960.md).
+# for DREAM on macOS: the DRM AAC/HE-AAC/HE-AACv2 encoder DREAM loads at run time
+# (XaacCodec; docs/research/xaac-spike.md, xaac960.md, xaac-drm.md).
 #
-# The pinned tree is patched with macx/patches/libxaac-*.patch (applied in name order) to
-# make HE-AAC v1/v2 work with 960-sample frames and a 12 kHz core, as DRM needs.
+# The pinned tree is patched with macx/patches/libxaac-*.patch (applied in name order):
+# 960-sample HE-AAC v1/v2, 12 kHz core, DRM access units (ER AAC with VCB11/HCR, CRC,
+# reversed SBR), exact frame sizes. The library name carries "_drm" and its ID string
+# "IXHEAACE+DRM" so DREAM never picks up a stock libxaac.
 #
-# Produces  $PREFIX/lib/libxaacenc.dylib   (install_name @rpath/libxaacenc.dylib)
-#           $PREFIX/include/xaacenc/{ixheaace_api.h,ixheaac_type_def.h,ixheaac_error_standards.h}
+# Produces  $PREFIX/lib/libxaacenc_drm.dylib   (install_name @rpath/libxaacenc_drm.dylib)
+#           $PREFIX/include/xaacenc_drm/{ixheaace_api.h,ixheaac_type_def.h,ixheaac_error_standards.h}
+#           $PREFIX/share/doc/libxaac/{LICENSE,NOTICE}
 #           $BUILD/xaacenc                 (upstream test-bench encoder, statically linked; not installed)
 #
 # Source: AOSP platform/external/libxaac, tag android-16.0.0_r4 (= upstream
@@ -96,16 +99,17 @@ ar rcs "$BUILD/libxaacenc.a" $objs
 EXPORTS=$BUILD/exports.txt
 printf '%s\n' _ixheaace_get_lib_id_strings _ixheaace_create _ixheaace_process \
     _ixheaace_delete > "$EXPORTS"
-mkdir -p "$PREFIX/lib" "$PREFIX/include/xaacenc"
+mkdir -p "$PREFIX/lib" "$PREFIX/include/xaacenc_drm" "$PREFIX/share/doc/libxaac"
 # shellcheck disable=SC2086
 $CC -arch "$ARCH" -dynamiclib $objs -lm $EXTRA \
     -Wl,-exported_symbols_list,"$EXPORTS" \
-    -install_name @rpath/libxaacenc.dylib \
+    -install_name @rpath/libxaacenc_drm.dylib \
     -compatibility_version 0.1.0 -current_version 0.1.12 \
-    -o "$PREFIX/lib/libxaacenc.dylib"
+    -o "$PREFIX/lib/libxaacenc_drm.dylib"
 cp "$SRC/encoder/ixheaace_api.h" "$SRC/common/ixheaac_type_def.h" \
-   "$SRC/common/ixheaac_error_standards.h" "$PREFIX/include/xaacenc/"
-printf '%s %s patches %s\n' "$XAAC_TAG" "$XAAC_COMMIT" "$PATCH_SUM" > "$PREFIX/lib/libxaacenc.dream-stamp"
+   "$SRC/common/ixheaac_error_standards.h" "$PREFIX/include/xaacenc_drm/"
+cp "$SRC/LICENSE" "$SRC/NOTICE" "$PREFIX/share/doc/libxaac/"
+printf '%s %s patches %s\n' "$XAAC_TAG" "$XAAC_COMMIT" "$PATCH_SUM" > "$PREFIX/lib/libxaacenc_drm.dream-stamp"
 
 # 4. upstream test-bench encoder (handy for experiments), linked statically
 TB="test/encoder/ixheaace_testbench.c test/encoder/ixheaace_error.c test/encoder/impd_drc_user_config.c"
@@ -121,7 +125,9 @@ $CC -arch "$ARCH" $tbobjs "$BUILD/libxaacenc.a" -lm $EXTRA -o "$BUILD/xaacenc"
 
 # 5. sanity check: API exported
 for sym in $(cat "$EXPORTS"); do
-    nm -gU "$PREFIX/lib/libxaacenc.dylib" | grep -q " $sym\$" || {
+    nm -gU "$PREFIX/lib/libxaacenc_drm.dylib" | grep -q " $sym\$" || {
         echo "error: $sym not exported" >&2; exit 1; }
 done
-echo "built $PREFIX/lib/libxaacenc.dylib ($(lipo -archs "$PREFIX/lib/libxaacenc.dylib"), id $(otool -D "$PREFIX/lib/libxaacenc.dylib" | tail -1)), test bench $BUILD/xaacenc"
+grep -q "IXHEAACE+DRM" "$PREFIX/lib/libxaacenc_drm.dylib" ||
+    { echo "error: libxaacenc_drm.dylib lacks the DRM marker (patches not applied?)" >&2; exit 1; }
+echo "built $PREFIX/lib/libxaacenc_drm.dylib ($(lipo -archs "$PREFIX/lib/libxaacenc_drm.dylib"), id $(otool -D "$PREFIX/lib/libxaacenc_drm.dylib" | tail -1)), test bench $BUILD/xaacenc"

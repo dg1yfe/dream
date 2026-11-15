@@ -58,7 +58,8 @@ public:
     /* DRM: exact size (bytes, aac_crc_bits included) of the next encoded
        frame, so that an audio super frame is filled completely (needed for
        SBR, whose data is read backwards from the end of each frame) */
-    void EncSetNextFrameSize(unsigned long lBytes);
+    virtual void EncSetNextFrameSize(unsigned long lBytes);
+    virtual bool EncHasExactFrameSize() const { return true; }
     virtual void resetFile(std::string) {}
     virtual std::string fileName(const CParameter& Parameters) const;
 protected:

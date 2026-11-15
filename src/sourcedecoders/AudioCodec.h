@@ -71,6 +71,18 @@ public:
 	   stereo = HE-AAC v2). Codecs that have them must override these. */
 	virtual bool CanEncodeSBR(CAudioParam::EAudCod eAudioCoding);
 	virtual bool CanEncodePS(CAudioParam::EAudCod eAudioCoding);
+	/* DRM: encoders that can make every access unit exactly as long as asked
+	   (fdk-aac with the DREAM patch, libxaac) get the size of each frame from
+	   EncSetNextFrameSize() (bytes, aac_crc_bits included) so that the audio
+	   super frame is filled completely; the others are rate controlled */
+	virtual bool EncHasExactFrameSize() const { return false; }
+	virtual void EncSetNextFrameSize(unsigned long lBytes) { (void)lBytes; }
+	/* Encoders that also accept a size range [min, max] for the next frame
+	   (libxaac) may use their bit reservoir inside an audio super frame: the
+	   transmitter gives each frame a range and the last one exactly the rest */
+	virtual bool EncHasFrameSizeRange() const { return false; }
+	virtual void EncSetNextFrameSizeRange(unsigned long lMinBytes, unsigned long lMaxBytes)
+	{ (void)lMinBytes; EncSetNextFrameSize(lMaxBytes); }
 	/* Ask the encoder GetEncoder() would choose */
 	static bool EncoderCanSBR(CAudioParam::EAudCod eAudioCoding);
 	static bool EncoderCanPS(CAudioParam::EAudCod eAudioCoding);

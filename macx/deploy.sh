@@ -46,6 +46,16 @@ faad=$PREFIX/lib/libfaad_drm.dylib
 nm -gU "$faad" | grep -q " _NeAACDecDreamDrmFixes\$" ||
     { echo "error: $faad is not the DREAM-patched faad2 (no NeAACDecDreamDrmFixes)" >&2; exit 1; }
 libs="$PREFIX/lib/libfaac_drm.dylib $faad"
+# libxaacenc_drm: DRM AAC/HE-AAC/HE-AACv2 encoder (libxaac, Apache-2.0) from
+# macx/build-xaac.sh; bundled with its LICENSE and NOTICE (Apache-2.0 section 4)
+xaac=$PREFIX/lib/libxaacenc_drm.dylib
+if [ -e "$xaac" ]; then
+    grep -q "IXHEAACE+DRM" "$xaac" ||
+        { echo "error: $xaac is not the DREAM DRM build of libxaac" >&2; exit 1; }
+    libs="$libs $xaac"
+else
+    echo "warning: $xaac not found - the bundle will have no libxaac DRM encoder" >&2
+fi
 if [ $with_fdk = 1 ]; then
     [ -e "$PREFIX/lib/libfdk-aac.2.dylib" ] ||
         { echo "error: $PREFIX/lib/libfdk-aac.2.dylib not found (macx/build.sh --deps-only)" >&2; exit 1; }
@@ -62,6 +72,13 @@ for lib in $libs; do
         codesign --force --sign - "$app/Contents/Frameworks/$(basename "$lib")"
     fi
 done
+
+if [ -e "$xaac" ]; then
+    lic=$app/Contents/Resources/licenses/libxaac
+    mkdir -p "$lic"
+    cp "$PREFIX/share/doc/libxaac/LICENSE" "$PREFIX/share/doc/libxaac/NOTICE" "$lic/"
+    cp "$REPO"/macx/patches/libxaac-*.patch "$lic/"
+fi
 
 # Qt frameworks + plugins + all non-system linked dylibs (libfdk-aac is not linked).
 "$MACDEPLOYQT" "$app" -always-overwrite -libpath="$PREFIX/lib" -libpath="$BREW_PREFIX/lib"

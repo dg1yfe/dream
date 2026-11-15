@@ -33,6 +33,9 @@
 #ifdef HAVE_LIBFDK_AAC
 # include "fdk_aac_codec.h"
 #endif
+#ifdef HAVE_LIBXAAC
+# include "xaac_codec.h"
+#endif
 #include <iostream>
 using namespace std;
 
@@ -75,6 +78,19 @@ CAudioCodec::InitCodecList()
         {
             cerr << "FDK codec not usable, not added" << endl;
             delete fdk;
+        }
+#endif
+#ifdef HAVE_LIBXAAC
+        /* libxaac (DRM patched, Apache-2.0): DRM encoder after fdk-aac, before faac */
+        XaacCodec* xaac = new XaacCodec;
+        if (xaac->CanEncode(CAudioParam::AC_AAC))
+        {
+            cerr << "Adding xaac codec (DRM encoder: yes)" << endl;
+            CodecList.push_back(xaac);
+        }
+        else
+        {
+            delete xaac;
         }
 #endif
         CodecList.push_back(new AacCodec);

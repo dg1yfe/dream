@@ -1,0 +1,1497 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: DREAM <dream@invalid>
+Date: Sun, 15 Nov 2026 16:22:48 +0100
+Subject: [PATCH] DRM access units (ETSI ES 201 980) with frame size limits
+
+New input fields: drm_mode (create time), drm_frame_bytes / drm_frame_bytes_min (read
+by every ixheaace_process() call). In DRM mode (AOT 2/5/29, 960-sample frames, one
+SCE/CPE) each call returns one access unit:
+
+- aac_crc_bits (CRC-8 x^8+x^4+x^3+x^2+1, preset 0xFF, inverted) over the element up to
+  and including tns_data(), as aac_scalable_main_element() of the main layer;
+- ER AAC syntax with aacSectionDataResilienceFlag = 1 (5-bit codebooks, VCB11: every
+  ESC sfb a section of its own without length) and aacSpectralDataResilienceFlag = 1
+  (HCR, ISO/IEC 14496-3 8.5.3.3: presorting, priority codewords, sets of non-priority
+  codewords with alternating direction; short windows unit-interleaved), no RVLC;
+- SBR (and MPEG-4 PS, ES 201 980 5.4.3) in DRM form: 8-bit SBR CRC instead of the
+  extension type, bs_coupling bit in the SCE, no alignment, header in every AU, stored
+  bit-reversed from the last bit of the AU;
+- zero padding between AAC and SBR data up to the requested size.
+
+The quantisation loop accounts the DRM side information exactly (static bits, VCB11
+section bits, CRC and SBR as ancillary bits). drm_frame_bytes caps the AU (bit
+reservoir included), drm_frame_bytes_min pads it and spends bits that would only be
+padding on a finer quantisation; the reservoir follows the transmitted sizes and starts
+empty, so a transmitter can keep every audio super frame exact while frames lend each
+other bits. The library ID becomes "IXHEAACE+DRM". New files ixheaace_drm.[ch] were
+written for DREAM from the standards.
+---
+ encoder/ixheaace_api.c                 |  37 ++++
+ encoder/ixheaace_api.h                 |  13 ++
+ encoder/ixheaace_drm.c                 | 252 ++++++++++++++++++++++
+ encoder/ixheaace_drm.h                 |  60 ++++++
+ encoder/ixheaace_dynamic_bits.c        |  10 +-
+ encoder/ixheaace_dynamic_bits.h        |   3 +-
+ encoder/ixheaace_enc_main.c            |  33 +++
+ encoder/ixheaace_enc_main.h            |   7 +
+ encoder/ixheaace_qc_data.h             |   7 +
+ encoder/ixheaace_qc_main_hp.c          | 120 ++++++++++-
+ encoder/ixheaace_sbr.h                 |   2 +
+ encoder/ixheaace_sbr_cmondata.h        |   2 +
+ encoder/ixheaace_sbr_crc.c             |  26 ++-
+ encoder/ixheaace_sbr_enc_struct.h      |   2 +
+ encoder/ixheaace_sbr_main.c            |  14 +-
+ encoder/ixheaace_sbr_main.h            |   6 +-
+ encoder/ixheaace_sbr_write_bitstream.c |   6 +-
+ encoder/ixheaace_static_bits.c         |  23 ++
+ encoder/ixheaace_static_bits.h         |   5 +
+ encoder/ixheaace_struct_def.h          |   3 +
+ encoder/ixheaace_version_number.h      |   4 +-
+ encoder/ixheaace_write_bitstream.c     | 283 +++++++++++++++++++++++++
+ encoder/ixheaace_write_bitstream.h     |  15 ++
+ encoder/libxaacenc.cmake               |   3 +-
+ 24 files changed, 918 insertions(+), 18 deletions(-)
+ create mode 100644 encoder/ixheaace_drm.c
+ create mode 100644 encoder/ixheaace_drm.h
+
+diff --git a/encoder/ixheaace_api.c b/encoder/ixheaace_api.c
+index 8b5ac54..a425162 100644
+--- a/encoder/ixheaace_api.c
++++ b/encoder/ixheaace_api.c
+@@ -818,6 +818,19 @@ static IA_ERRORCODE ixheaace_validate_config_params(ixheaace_input_config *pstr_
+         (pstr_input_config->esbr_flag == 1)) {
+       pstr_input_config->esbr_flag = 0;
+     }
++    if (pstr_input_config->drm_mode != 0) {
++      /* DRM: 960-sample AAC-LC / HE-AAC / HE-AACv2, one element, no ADTS */
++      if ((pstr_input_config->aot != AOT_AAC_LC && pstr_input_config->aot != AOT_SBR &&
++           pstr_input_config->aot != AOT_PS) ||
++          pstr_input_config->i_channels > 2) {
++        pstr_input_config->drm_mode = 0;
++      } else {
++        pstr_input_config->drm_mode = 1;
++        pstr_input_config->frame_length = FRAME_LEN_960;
++        pstr_input_config->i_use_adts = 0;
++        pstr_input_config->esbr_flag = 0;
++      }
++    }
+   }
+   return err_code;
+ }
+@@ -881,6 +894,11 @@ static IA_ERRORCODE ixheaace_set_config_params(ixheaace_api_struct *pstr_api_str
+         pstr_input_config->aac_config.f_no_stereo_preprocessing;
+ 
+     pstr_api_struct->config[ele_idx].aac_config.use_tns = pstr_input_config->aac_config.use_tns;
++    pstr_api_struct->config[ele_idx].aac_config.drm_mode = pstr_input_config->drm_mode;
++    pstr_api_struct->config[ele_idx].aac_config.drm_frame_bytes = 0;
++    pstr_api_struct->config[ele_idx].aac_config.drm_frame_bytes_min = 0;
++    pstr_api_struct->config[ele_idx].aac_config.drm_sbr_bits = 0;
++    pstr_api_struct->config[ele_idx].aac_config.drm_started = 0;
+     if (pstr_input_config->aot == AOT_AAC_LD || pstr_input_config->aot == AOT_AAC_ELD) {
+       pstr_api_struct->config[ele_idx].aac_config.inv_quant =
+           pstr_input_config->aac_config.inv_quant;
+@@ -2498,6 +2516,7 @@ static IA_ERRORCODE ia_enhaacplus_enc_init(ixheaace_api_struct *pstr_api_struct,
+     } else if (pstr_api_struct->pstr_state->aot == AOT_SBR ||
+                pstr_api_struct->pstr_state->aot == AOT_PS) {
+       spectral_band_replication_config.frame_flag_960 = pstr_aac_config->flag_framelength_small;
++      spectral_band_replication_config.is_drm = pstr_aac_config->drm_mode;
+       spectral_band_replication_config.sbr_codec = HEAAC_SBR;
+     }
+ 
+@@ -2986,6 +3005,16 @@ static IA_ERRORCODE ia_enhaacplus_enc_execute(ixheaace_api_struct *pstr_api_stru
+       }
+     }
+ 
++    if (pstr_aac_enc[ele_idx]->config.drm_mode) {
++      pstr_aac_enc[ele_idx]->config.drm_frame_bytes = pstr_api_struct->pstr_state->drm_frame_bytes;
++      pstr_aac_enc[ele_idx]->config.drm_frame_bytes_min =
++          pstr_api_struct->pstr_state->drm_frame_bytes_min;
++      pstr_aac_enc[ele_idx]->config.drm_sbr_bits =
++          (pstr_sbr_encoder && pstr_api_struct->pstr_state->downsample[ele_idx] &&
++           pstr_api_struct->config[ele_idx].element_type != ID_LFE)
++              ? ixheaace_sbr_get_payload_bits(pstr_sbr_encoder)
++              : 0;
++    }
+     error = ia_enhaacplus_enc_aac_core_encode(
+         pstr_aac_enc, ptr_input_buffer, time_in_stride,
+         pstr_api_struct->pstr_state->anc_data_bytes[ele_idx],
+@@ -3922,6 +3951,14 @@ IA_ERRORCODE ixheaace_process(pVOID pstr_obj_ixheaace, pVOID pv_input, pVOID pv_
+   pstr_api_struct->pstr_state->is_quant_spec_zero = 0;
+   pstr_api_struct->pstr_state->is_gain_limited = 0;
+   if (!pstr_api_struct->usac_en) {
++    pstr_api_struct->pstr_state->drm_frame_bytes =
++        (pv_input != NULL && pstr_api_struct->config[0].aac_config.drm_mode)
++            ? ((ixheaace_input_config *)pv_input)->drm_frame_bytes
++            : 0;
++    pstr_api_struct->pstr_state->drm_frame_bytes_min =
++        (pv_input != NULL && pstr_api_struct->config[0].aac_config.drm_mode)
++            ? ((ixheaace_input_config *)pv_input)->drm_frame_bytes_min
++            : 0;
+     for (ele_idx = 0; ele_idx < pstr_api_struct->config[0].num_bs_elements; ele_idx++) {
+       error = ia_enhaacplus_enc_execute(pstr_api_struct, ele_idx);
+       if (error != IA_NO_ERROR) {
+diff --git a/encoder/ixheaace_api.h b/encoder/ixheaace_api.h
+index 64e8ea0..de99c9b 100644
+--- a/encoder/ixheaace_api.h
++++ b/encoder/ixheaace_api.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -116,6 +117,18 @@ typedef struct {
+   FLOAT32 sample_peak_level;
+   UWORD16 stream_id;
+   FLAG use_delay_adjustment;
++  /* DRM (ETSI ES 201 980) access units, added for DREAM. AOT 2/5/29 with 960-sample
++     frames: each ixheaace_process() call returns one AU = aac_crc_bits byte + ER AAC
++     (VCB11, HCR) + SBR/PS data bit-reversed at the end. No ADTS/ASC. */
++  FLAG drm_mode;
++  /* read by every ixheaace_process() call in DRM mode, in bytes with the CRC byte:
++     drm_frame_bytes     > 0: the AU is at most this long (0: no limit)
++     drm_frame_bytes_min > 0: the AU is at least this long (zero padding, finer quantisation)
++     Equal values give an exact size. Within the range the bit reservoir is used, so a
++     transmitter that sets the range per audio super frame (the last frame gets exactly
++     the rest) keeps every super frame exact and still lets frames borrow from each other. */
++  WORD32 drm_frame_bytes;
++  WORD32 drm_frame_bytes_min;
+ } ixheaace_input_config;
+ 
+ typedef struct {
+diff --git a/encoder/ixheaace_drm.c b/encoder/ixheaace_drm.c
+new file mode 100644
+index 0000000..7990509
+--- /dev/null
++++ b/encoder/ixheaace_drm.c
+@@ -0,0 +1,252 @@
++/******************************************************************************
++ *
++ * Copyright (C) 2026 The DREAM project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at:
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ *****************************************************************************
++ * DRM access-unit helpers (see ixheaace_drm.h). Written for DREAM from
++ * ISO/IEC 14496-3 (8.5.3.3 HCR) and ETSI ES 201 980; not part of the
++ * Ittiam/AOSP sources.
++ */
++
++#include <string.h>
++#include "ixheaac_type_def.h"
++#include "ixheaac_constants.h"
++#include "ixheaace_aac_constants.h"
++#include "ixheaac_basic_ops32.h"
++#include "ixheaac_basic_ops16.h"
++#include "ixheaac_basic_ops40.h"
++#include "ixheaac_basic_ops.h"
++#include "ixheaace_bitbuffer.h"
++#include "ixheaace_psy_const.h"
++#include "ixheaace_tns.h"
++#include "ixheaace_tns_params.h"
++#include "ixheaace_rom.h"
++#include "ixheaace_bits_count.h"
++#include "ixheaace_dynamic_bits.h"
++#include "ixheaace_drm.h"
++
++/* 8.5.3.3.3.1 presorting order of the codebooks with VCB11 */
++static const WORD32 ixheaace_drm_presort[22] = {11, 31, 30, 29, 28, 27, 26, 25, 24, 23, 22,
++                                                21, 20, 19, 18, 17, 16, 9,  7,  5,  3,  1};
++/* 8.5.3.3.3.2 maximum codeword length per codebook */
++static const WORD32 ixheaace_drm_max_cw_len[32] = {0,  11, 9,  20, 16, 13, 11, 14, 12, 17, 14,
++                                                   49, 0,  0,  0,  0,  14, 17, 21, 21, 25, 25,
++                                                   29, 29, 29, 29, 33, 33, 33, 37, 37, 41};
++
++UWORD8 ixheaace_drm_crc8(const UWORD8 *ptr_buf, WORD32 start_bit, WORD32 nbits) {
++  UWORD32 crc = 0xFF;
++  WORD32 i;
++  for (i = 0; i < nbits; i++) {
++    WORD32 pos = start_bit + i;
++    UWORD32 bit = (ptr_buf[pos >> 3] >> (7 - (pos & 7))) & 1;
++    UWORD32 fb = ((crc >> 7) & 1) ^ bit;
++    crc = (crc << 1) & 0xFF;
++    if (fb) crc ^= 0x1D;
++  }
++  return (UWORD8)(~crc & 0xFF);
++}
++
++VOID ixheaace_drm_put_bits(UWORD8 *ptr_buf, WORD32 pos, UWORD64 value, WORD32 num_bits) {
++  WORD32 i;
++  for (i = 0; i < num_bits; i++) {
++    WORD32 p = pos + i;
++    UWORD32 bit = (UWORD32)((value >> (num_bits - 1 - i)) & 1);
++    if (bit)
++      ptr_buf[p >> 3] |= (UWORD8)(0x80 >> (p & 7));
++    else
++      ptr_buf[p >> 3] &= (UWORD8)~(0x80 >> (p & 7));
++  }
++}
++
++static WORD32 ixheaace_drm_cb_matches(WORD32 sort_cb, WORD32 sect_cb) {
++  if (sect_cb <= 0 || sect_cb > 31 || (sect_cb > 11 && sect_cb < 16)) return 0;
++  if (sort_cb < 11) return (sect_cb == sort_cb) || (sect_cb == sort_cb + 1);
++  return sect_cb == sort_cb;
++}
++
++WORD32 ixheaace_drm_hcr_codewords(const WORD16 *ptr_quant_spec,
++                                  const ixheaace_section_data *pstr_section_data,
++                                  const WORD32 *ptr_sfb_offset, WORD32 grouping_mask,
++                                  ixheaace_huffman_tables *pstr_huffman_tbl,
++                                  ixheaace_drm_cw *ptr_cw, WORD32 *ptr_total_bits,
++                                  WORD32 *ptr_longest) {
++  WORD32 wgl[TRANS_FAC], num_groups = 1, g, i, sort_idx, sfb, w_idx, num_cw = 0;
++  WORD32 sfb_per_group = pstr_section_data->sfb_per_group;
++  WORD32 max_sfb = pstr_section_data->max_sfb_per_grp;
++  UWORD8 tmp_mem[16];
++  ixheaace_bit_buf tmp_bb;
++
++  *ptr_total_bits = 0;
++  *ptr_longest = 0;
++  wgl[0] = 1;
++  if (pstr_section_data->block_type == SHORT_WINDOW) {
++    for (i = 0; i < TRANS_FAC - 1; i++) {
++      if ((grouping_mask >> (TRANS_FAC - 2 - i)) & 1) {
++        wgl[num_groups - 1]++;
++      } else {
++        wgl[num_groups++] = 1;
++      }
++    }
++  }
++
++  for (sort_idx = 0; sort_idx < 22; sort_idx++) {
++    WORD32 sort_cb = ixheaace_drm_presort[sort_idx];
++    for (sfb = 0; sfb < max_sfb; sfb++) {
++      /* width of the sfb in one window */
++      WORD32 width = (ptr_sfb_offset[sfb + 1] - ptr_sfb_offset[sfb]) / wgl[0];
++      for (w_idx = 0; 4 * w_idx < width; w_idx++) {
++        for (g = 0; g < num_groups; g++) {
++          WORD32 k = g * sfb_per_group + sfb, cb = -1;
++          for (i = 0; i < pstr_section_data->num_of_sections; i++) {
++            const ixheaace_section_info *s = &pstr_section_data->section[i];
++            if (k >= s->sfb_start && k < s->sfb_start + s->sfb_cnt) {
++              cb = s->code_book;
++              break;
++            }
++          }
++          if (!ixheaace_drm_cb_matches(sort_cb, cb)) continue;
++          {
++            WORD32 sect_sfb_size = ptr_sfb_offset[k + 1] - ptr_sfb_offset[k];
++            WORD32 inc = (cb < 5) ? 4 : 2;
++            WORD32 group_cws = (4 * wgl[g]) / inc;
++            WORD32 win_width = sect_sfb_size / wgl[g];
++            WORD32 cws_per_unit = 4 / inc;
++            WORD32 cws;
++            for (cws = 0; (cws < group_cws) && ((cws + w_idx * group_cws) < sect_sfb_size);
++                 cws++) {
++              WORD32 sp = ptr_sfb_offset[k] + (cws / cws_per_unit) * win_width + 4 * w_idx +
++                          inc * (cws % cws_per_unit);
++              WORD32 n, b;
++              UWORD64 v = 0;
++              memset(tmp_mem, 0, sizeof(tmp_mem));
++              ia_enhaacplus_enc_create_bitbuffer(&tmp_bb, tmp_mem, sizeof(tmp_mem));
++              ia_enhaacplus_enc_code_values((WORD16 *)(ptr_quant_spec + sp), inc, cb, &tmp_bb,
++                                            pstr_huffman_tbl);
++              n = ia_enhaacplus_enc_get_bits_available(&tmp_bb);
++              for (b = 0; b < n; b++) v = (v << 1) | ((tmp_mem[b >> 3] >> (7 - (b & 7))) & 1);
++              if (num_cw >= IXHEAACE_DRM_MAX_CW) return -1;
++              ptr_cw[num_cw].bits = v;
++              ptr_cw[num_cw].len = n;
++              ptr_cw[num_cw].cb = cb;
++              num_cw++;
++              *ptr_total_bits += n;
++              if (n > *ptr_longest) *ptr_longest = n;
++            }
++          }
++        }
++      }
++    }
++  }
++  return num_cw;
++}
++
++/* one layout attempt with len_reord bits; returns 0 if every codeword is placed and the
++   layout stays within the 64-bit segment/codeword buffers a decoder may use */
++static WORD32 ixheaace_drm_hcr_try(ixheaace_drm_cw *ptr_cw, WORD32 num_cw, WORD32 longest,
++                                   UWORD8 *ptr_out, WORD32 len_reord) {
++  WORD32 left[IXHEAACE_DRM_MAX_CW], right[IXHEAACE_DRM_MAX_CW];
++  WORD32 rem[IXHEAACE_DRM_MAX_CW], partial[IXHEAACE_DRM_MAX_CW];
++  WORD32 num_seg = 0, acc = 0, i, set, num_sets, ok = 0;
++
++  memset(ptr_out, 0, (len_reord + 7) / 8 + 8);
++  if (num_cw == 0) return 0;
++
++  /* segments (8.5.3.3.3.2): one per priority codeword while they fit */
++  for (i = 0; i < num_cw; i++) {
++    WORD32 w = ixheaace_drm_max_cw_len[ptr_cw[i].cb];
++    if (w > longest) w = longest;
++    if (acc + w > len_reord) break;
++    left[num_seg] = acc;
++    right[num_seg] = acc + w - 1;
++    num_seg++;
++    acc += w;
++  }
++  if (num_seg == 0) return -1;
++  if (i < num_cw) {
++    /* the remaining bits extend the last segment; a decoder holds them together with
++       what is left of that segment after its priority codeword: at most 64 bits.
++       faad2 (2.11.4, hcr.c) also merges the two parts wrongly when more than 32 bits
++       are left after the priority codeword, so keep that part within 32 bits. */
++    WORD32 ext = len_reord - acc;
++    WORD32 left_after_pcw = (right[num_seg - 1] - left[num_seg - 1] + 1) - ptr_cw[num_seg - 1].len;
++    if (ext > 0 && (left_after_pcw + ext > 64 || left_after_pcw > 32)) return -2;
++    right[num_seg - 1] = len_reord - 1;
++  }
++
++  for (i = 0; i < num_cw; i++) {
++    rem[i] = ptr_cw[i].len;
++    partial[i] = 0;
++  }
++
++  /* priority codewords, forward at the start of their segment */
++  for (i = 0; i < num_seg; i++) {
++    ixheaace_drm_put_bits(ptr_out, left[i], ptr_cw[i].bits, ptr_cw[i].len);
++    left[i] += ptr_cw[i].len;
++    rem[i] = 0;
++  }
++
++  /* non-priority codewords in sets of num_seg, alternating direction */
++  num_sets = num_cw / num_seg;
++  for (set = 1; set <= num_sets; set++) {
++    WORD32 backwards = set & 1, trial;
++    for (trial = 0; trial < num_seg; trial++) {
++      WORD32 base;
++      for (base = 0; base < num_seg; base++) {
++        WORD32 s = (trial + base) % num_seg;
++        WORD32 c = num_seg + base + (set - 1) * num_seg;
++        WORD32 free_bits, n;
++        if (c >= num_cw) break;
++        free_bits = right[s] - left[s] + 1;
++        if (rem[c] <= 0 || free_bits <= 0) continue;
++        if (free_bits + partial[c] > 64) return -3;
++        n = (rem[c] < free_bits) ? rem[c] : free_bits;
++        {
++          /* next n bits of the codeword (MSB part first) */
++          UWORD64 piece = (ptr_cw[c].bits >> (rem[c] - n)) & ((((UWORD64)1) << n) - 1);
++          if (backwards) {
++            WORD32 b;
++            for (b = 0; b < n; b++) {
++              ixheaace_drm_put_bits(ptr_out, right[s] - b, (piece >> (n - 1 - b)) & 1, 1);
++            }
++            right[s] -= n;
++          } else {
++            ixheaace_drm_put_bits(ptr_out, left[s], piece, n);
++            left[s] += n;
++          }
++        }
++        rem[c] -= n;
++        if (rem[c] > 0) partial[c] += n;
++      }
++    }
++  }
++  for (i = 0; i < num_cw; i++) {
++    if (rem[i] > 0) ok = -4;
++  }
++  return ok;
++}
++
++WORD32 ixheaace_drm_hcr_place(ixheaace_drm_cw *ptr_cw, WORD32 num_cw, WORD32 longest,
++                              UWORD8 *ptr_out, WORD32 *ptr_len_reord) {
++  WORD32 pad, base_len = *ptr_len_reord;
++  /* the plain layout almost always works; otherwise grow the area bit by bit */
++  for (pad = 0; pad < 64; pad++) {
++    if (base_len + pad >= (1 << IXHEAACE_DRM_LEN_REORD_BITS)) break;
++    if (ixheaace_drm_hcr_try(ptr_cw, num_cw, longest, ptr_out, base_len + pad) == 0) {
++      *ptr_len_reord = base_len + pad;
++      return 0;
++    }
++  }
++  return -1;
++}
+diff --git a/encoder/ixheaace_drm.h b/encoder/ixheaace_drm.h
+new file mode 100644
+index 0000000..d4a895d
+--- /dev/null
++++ b/encoder/ixheaace_drm.h
+@@ -0,0 +1,60 @@
++/******************************************************************************
++ *
++ * Copyright (C) 2026 The DREAM project
++ *
++ * Licensed under the Apache License, Version 2.0 (the "License");
++ * you may not use this file except in compliance with the License.
++ * You may obtain a copy of the License at:
++ *
++ * http://www.apache.org/licenses/LICENSE-2.0
++ *
++ * Unless required by applicable law or agreed to in writing, software
++ * distributed under the License is distributed on an "AS IS" BASIS,
++ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++ * See the License for the specific language governing permissions and
++ * limitations under the License.
++ *
++ *****************************************************************************
++ * DRM (ETSI ES 201 980) access units for the AAC-LC / HE-AAC encoder:
++ * ER AAC with VCB11 and HCR (ISO/IEC 14496-3 4.5.2.3, 8.5.3.3), the DRM
++ * aac_crc_bits and the SBR data stored bit-reversed at the end of the AU.
++ * Written for DREAM from the standards; not part of the Ittiam/AOSP sources.
++ */
++
++#pragma once
++
++/* one Huffman codeword of the spectral data (codeword, sign and escape bits) */
++typedef struct {
++  UWORD64 bits; /* right-aligned */
++  WORD32 len;
++  WORD32 cb;
++} ixheaace_drm_cw;
++
++#define IXHEAACE_DRM_MAX_CW (FRAME_LEN_1024 / 2)
++#define IXHEAACE_DRM_LEN_REORD_BITS (14)
++#define IXHEAACE_DRM_LEN_LONGEST_BITS (6)
++#define IXHEAACE_DRM_SECT_CB_BITS (5)
++
++/* DRM CRC-8: x^8 + x^4 + x^3 + x^2 + 1, register preset to all ones, transmitted
++   inverted (ETSI ES 201 980 annex D). nbits bits starting at bit start_bit. */
++UWORD8 ixheaace_drm_crc8(const UWORD8 *ptr_buf, WORD32 start_bit, WORD32 nbits);
++
++/* write num_bits of value (right-aligned) MSB first at bit position pos */
++VOID ixheaace_drm_put_bits(UWORD8 *ptr_buf, WORD32 pos, UWORD64 value, WORD32 num_bits);
++
++/* Collect the codewords of one channel in HCR presort order (8.5.3.3.3.1, the
++   order the decoder reads them). Returns the number of codewords. */
++WORD32 ixheaace_drm_hcr_codewords(const WORD16 *ptr_quant_spec,
++                                  const ixheaace_section_data *pstr_section_data,
++                                  const WORD32 *ptr_sfb_offset, WORD32 grouping_mask,
++                                  ixheaace_huffman_tables *pstr_huffman_tbl,
++                                  ixheaace_drm_cw *ptr_cw, WORD32 *ptr_total_bits,
++                                  WORD32 *ptr_longest);
++
++/* Place the codewords into the segments of the reordered spectral data (priority
++   codewords, then the non-priority sets with alternating direction, 8.5.3.3.3).
++   *ptr_len_reord: in = sum of codeword lengths, out = length actually used (padding
++   is added if a layout would not be decodable). ptr_out must hold *ptr_len_reord + 64
++   bits and be zeroed. Returns 0 on success. */
++WORD32 ixheaace_drm_hcr_place(ixheaace_drm_cw *ptr_cw, WORD32 num_cw, WORD32 longest,
++                              UWORD8 *ptr_out, WORD32 *ptr_len_reord);
+diff --git a/encoder/ixheaace_dynamic_bits.c b/encoder/ixheaace_dynamic_bits.c
+index c268300..c9db7e4 100644
+--- a/encoder/ixheaace_dynamic_bits.c
++++ b/encoder/ixheaace_dynamic_bits.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <limits.h>
+@@ -541,13 +542,15 @@ static IA_ERRORCODE ia_enhaacplus_enc_scf_count(const WORD16 *ptr_scale_fac,
+   return IA_NO_ERROR;
+ }
+ 
++WORD32 ixheaace_drm_section_bits(const ixheaace_section_data *pstr_section_data);
++
+ IA_ERRORCODE ia_enhaacplus_enc_dyn_bitcount(
+     const WORD16 *ptr_quant_spec, const UWORD16 *ptr_max_val_in_sfb, const WORD16 *ptr_scale_fac,
+     const WORD32 block_type, const WORD32 sfb_cnt, const WORD32 max_sfb_per_grp,
+     const WORD32 sfb_per_grp, const WORD32 *ptr_sfb_offset,
+     ixheaace_section_data *pstr_section_data, WORD32 *ptr_side_info_tab_long,
+     WORD32 *ptr_side_info_tab_short, ixheaace_huffman_tables *ptr_huffman_tbl,
+-    WORD32 *ptr_scratch_buf, WORD32 aot, WORD32 *bit_cnt) {
++    WORD32 *ptr_scratch_buf, WORD32 aot, WORD32 drm_mode, WORD32 *bit_cnt) {
+   IA_ERRORCODE err_code;
+   WORD32(*ptr_bit_look_up)
+   [CODE_BCK_ESC_NDX + 1] = (WORD32(*)[CODE_BCK_ESC_NDX + 1]) ptr_scratch_buf;
+@@ -571,6 +574,11 @@ IA_ERRORCODE ia_enhaacplus_enc_dyn_bitcount(
+     return err_code;
+   }
+ 
++  if (drm_mode) {
++    /* DRM section data: 5-bit codebooks, VCB11 sections of one sfb without length */
++    pstr_section_data->side_info_bits = ixheaace_drm_section_bits(pstr_section_data);
++  }
++
+   err_code = ia_enhaacplus_enc_scf_count(ptr_scale_fac, ptr_max_val_in_sfb, pstr_section_data,
+                                          ptr_huffman_tbl);
+ 
+diff --git a/encoder/ixheaace_dynamic_bits.h b/encoder/ixheaace_dynamic_bits.h
+index dc786b1..0e7d0bd 100644
+--- a/encoder/ixheaace_dynamic_bits.h
++++ b/encoder/ixheaace_dynamic_bits.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -68,4 +69,4 @@ IA_ERRORCODE ia_enhaacplus_enc_dyn_bitcount(
+     const WORD32 sfb_per_grp, const WORD32 *ptr_sfb_offset,
+     ixheaace_section_data *pstr_section_data, WORD32 *ptr_side_info_tab_long,
+     WORD32 *ptr_side_info_tab_short, ixheaace_huffman_tables *ptr_huffman_tbl,
+-    WORD32 *ptr_scratch_buf, WORD32 aot, WORD32 *bit_cnt);
++    WORD32 *ptr_scratch_buf, WORD32 aot, WORD32 drm_mode, WORD32 *bit_cnt);
+diff --git a/encoder/ixheaace_enc_main.c b/encoder/ixheaace_enc_main.c
+index 46c7bd5..fde0cd7 100644
+--- a/encoder/ixheaace_enc_main.c
++++ b/encoder/ixheaace_enc_main.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+@@ -153,6 +154,20 @@ IA_ERRORCODE ia_enhaacplus_enc_aac_core_encode(
+       &pstr_aac_encoder->qc_kernel, pstr_aac_encoder->config.bit_rate,
+       pstr_aac_encoder->config.core_sample_rate, flag_last_element, frame_len_long);
+ 
++  pstr_aac_encoder->qc_kernel.drm_mode = pstr_aac_encoder->config.drm_mode;
++  if (pstr_aac_encoder->config.drm_mode && !pstr_aac_encoder->config.drm_started) {
++    /* DRM: the reservoir starts empty, so its level is what earlier frames saved
++       (a DRM audio super frame cannot lend bits it has not got) */
++    pstr_aac_encoder->qc_kernel.element_bits.bit_res_level = 0;
++    pstr_aac_encoder->config.drm_started = 1;
++  }
++  pstr_aac_encoder->qc_kernel.drm_max_bits =
++      pstr_aac_encoder->config.drm_mode ? 8 * pstr_aac_encoder->config.drm_frame_bytes : 0;
++  pstr_aac_encoder->qc_kernel.drm_min_bits =
++      pstr_aac_encoder->config.drm_mode ? 8 * pstr_aac_encoder->config.drm_frame_bytes_min : 0;
++  /* aac_crc_bits + SBR data */
++  pstr_aac_encoder->qc_kernel.drm_anc_bits = 8 + pstr_aac_encoder->config.drm_sbr_bits;
++
+   for (ch = 0; ch < pstr_element_info->n_channels_in_el; ch++) {
+     pstr_aac_encoder->psy_out.psy_out_ch[ch]->ms_digest =
+         pstr_aac_encoder->psy_out.psy_out_element.tools_info.ms_digest;
+@@ -188,6 +203,24 @@ IA_ERRORCODE ia_enhaacplus_enc_aac_core_encode(
+     }
+   }
+ 
++  if (pstr_aac_encoder->config.drm_mode) {
++    /* DRM access unit (size limited by the transmitter, padding included) */
++    ixheaace_element_bits *pstr_el_bits = &pstr_aac_encoder->qc_kernel.element_bits;
++    err_code = ixheaace_drm_write_au(
++        pstr_element_info, &pstr_aac_encoder->qc_out, &pstr_aac_encoder->psy_out,
++        pstr_aac_tabs, ptr_anc_bytes, pstr_aac_encoder->config.drm_sbr_bits,
++        pstr_aac_encoder->config.drm_frame_bytes_min, pstr_aac_encoder->config.drm_frame_bytes,
++        ptr_out_bytes, (MAXIMUM_CHANNEL_BITS_960 / 8) * total_channels, num_out_bytes);
++    if (err_code == IA_NO_ERROR && pstr_el_bits->average_bits > 0) {
++      /* the bit reservoir follows what was really transmitted (padding counts as spent) */
++      pstr_el_bits->bit_res_level += pstr_el_bits->average_bits - 8 * (*num_out_bytes);
++      if (pstr_el_bits->bit_res_level < 0) pstr_el_bits->bit_res_level = 0;
++      if (pstr_el_bits->bit_res_level > pstr_el_bits->max_bit_res_bits)
++        pstr_el_bits->bit_res_level = pstr_el_bits->max_bit_res_bits;
++    }
++    return err_code;
++  }
++
+   /* Update bit reservoir levels */
+   ia_enhaacplus_enc_update_bit_reservoir(&pstr_aac_encoder->qc_kernel, &pstr_aac_encoder->qc_out);
+ 
+diff --git a/encoder/ixheaace_enc_main.h b/encoder/ixheaace_enc_main.h
+index 3dd377e..304e237 100644
+--- a/encoder/ixheaace_enc_main.h
++++ b/encoder/ixheaace_enc_main.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -57,6 +58,12 @@ typedef struct {
+   WORD32 flag_framelength_small;   /* indicates frame size. 0 -> 512, 1 -> 480
+                                    indicates frame size. 0 -> 1024, 1 -> 960 */
+   WORD32 bitreservoir_size;        /* size of bit reservoir (default:0; max 6144)*/
++  /* DRM (DREAM): ER AAC access units for ETSI ES 201 980 */
++  WORD32 drm_mode;        /* 1: DRM access units instead of raw_data_block()s */
++  WORD32 drm_frame_bytes;     /* > 0: max size of the next AU (aac_crc_bits included) */
++  WORD32 drm_frame_bytes_min; /* > 0: min size of the next AU */
++  WORD32 drm_sbr_bits;    /* bits of the DRM SBR data of the next AU (0: none) */
++  WORD32 drm_started;     /* the first DRM frame has been encoded */
+ } iaace_config;
+ 
+ typedef struct {
+diff --git a/encoder/ixheaace_qc_data.h b/encoder/ixheaace_qc_data.h
+index 4f099a3..8f2d792 100644
+--- a/encoder/ixheaace_qc_data.h
++++ b/encoder/ixheaace_qc_data.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -146,6 +147,12 @@ typedef struct {
+   WORD32 side_info_tab_long[MAXIMUM_SCALE_FACTOR_BAND_LONG + 1];
+   WORD32 side_info_tab_short[MAXIMUM_SCALE_FACTOR_BAND_SHORT + 1];
+   ixheaace_qc_scratch qc_scr;
++  /* DRM (DREAM): ER AAC syntax; drm_max_bits/drm_min_bits > 0 = limits of this frame;
++     drm_anc_bits = CRC byte + SBR bits of this frame */
++  WORD32 drm_mode;
++  WORD32 drm_max_bits;
++  WORD32 drm_min_bits;
++  WORD32 drm_anc_bits;
+ } ixheaace_qc_state;
+ 
+ typedef struct {
+diff --git a/encoder/ixheaace_qc_main_hp.c b/encoder/ixheaace_qc_main_hp.c
+index 986bbb7..3910ccb 100644
+--- a/encoder/ixheaace_qc_main_hp.c
++++ b/encoder/ixheaace_qc_main_hp.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <math.h>
+@@ -66,6 +67,22 @@
+ #include "ixheaace_qc_util.h"
+ #include "ixheaace_common_utils.h"
+ 
++/* quantise all coded sfbs of a channel with the given global gain */
++static VOID ixheaace_drm_requantize(ixheaace_psy_out_channel *psy_ch, ixheaace_qc_out_channel *qc_ch,
++                                    ixheaace_qc_stack *ptr_stack, WORD32 global_gain) {
++  WORD32 sfb_offs, sfb;
++  for (sfb_offs = 0; sfb_offs < psy_ch->sfb_count; sfb_offs += psy_ch->sfb_per_group) {
++    for (sfb = 0; sfb < psy_ch->max_sfb_per_grp; sfb++) {
++      iaace_quantize_lines(global_gain - qc_ch->scalefactor[sfb + sfb_offs],
++                           psy_ch->sfb_offsets[sfb_offs + sfb + 1] -
++                               psy_ch->sfb_offsets[sfb_offs + sfb],
++                           ptr_stack->exp_spec + psy_ch->sfb_offsets[sfb_offs + sfb],
++                           qc_ch->quant_spec + psy_ch->sfb_offsets[sfb_offs + sfb],
++                           ptr_stack->mdct_spec_float + psy_ch->sfb_offsets[sfb_offs + sfb]);
++    }
++  }
++}
++
+ IA_ERRORCODE ia_enhaacplus_enc_qc_main(
+     ixheaace_qc_state *pstr_qc_state, WORD32 num_channels, ixheaace_element_bits *pstr_el_bits,
+     ixheaace_psy_out_channel **psy_out_ch,
+@@ -98,11 +115,29 @@ IA_ERRORCODE ia_enhaacplus_enc_qc_main(
+   if (pstr_el_bits->bit_res_level > pstr_el_bits->max_bit_res_bits) {
+     return IA_EXHEAACE_EXE_FATAL_INVALID_BIT_RES_LEVEL;
+   }
+-  pstr_qc_out_element->static_bits_used =
+-      ia_enhaacplus_enc_count_static_bitdemand(psy_out_ch, pstr_psy_out_element, num_channels,
+-                                               aot, adts_flag, stat_bits_flag, flag_last_element);
++  WORD32 drm_mode = pstr_qc_state->drm_mode;
++  /* DRM: frame size limits from the transmitter (bits, CRC and SBR included) */
++  WORD32 drm_max = drm_mode ? pstr_qc_state->drm_max_bits : 0;
++  WORD32 drm_min = drm_mode ? pstr_qc_state->drm_min_bits : 0;
++  WORD32 frame_avg_bits = pstr_el_bits->average_bits;
++  WORD32 res_level = pstr_el_bits->bit_res_level;
++  WORD32 end_bits = drm_mode ? 0 : 7; /* ID_END (not in DRM) */
++  WORD32 max_total;
++
++  if (drm_max > 0 && frame_avg_bits > drm_max) frame_avg_bits = drm_max;
++
++  if (drm_mode) {
++    pstr_qc_out_element->static_bits_used =
++        ixheaace_drm_count_static_bitdemand(psy_out_ch, pstr_psy_out_element, num_channels);
++  } else {
++    pstr_qc_out_element->static_bits_used = ia_enhaacplus_enc_count_static_bitdemand(
++        psy_out_ch, pstr_psy_out_element, num_channels, aot, adts_flag, stat_bits_flag,
++        flag_last_element);
++  }
+ 
+-  if (ancillary_data_bytes) {
++  if (drm_mode) {
++    pstr_qc_out_element->anc_bits_used = pstr_qc_state->drm_anc_bits;
++  } else if (ancillary_data_bytes) {
+     pstr_qc_out_element->anc_bits_used =
+         7 + 8 * (ancillary_data_bytes + (ancillary_data_bytes >= 15));
+   } else {
+@@ -118,9 +153,9 @@ IA_ERRORCODE ia_enhaacplus_enc_qc_main(
+   iaace_adjust_threshold(
+       &pstr_qc_state->str_adj_thr, pstr_adj_thr_elem, psy_out_ch, ch_bit_dist,
+       pstr_qc_out_element,
+-      pstr_el_bits->average_bits - pstr_qc_out_element->static_bits_used -
++      frame_avg_bits - pstr_qc_out_element->static_bits_used -
+           pstr_qc_out_element->anc_bits_used,
+-      pstr_el_bits->bit_res_level, pstr_el_bits->max_bit_res_bits,
++      res_level, pstr_el_bits->max_bit_res_bits,
+       pstr_qc_out_element->static_bits_used + pstr_qc_out_element->anc_bits_used,
+       &pstr_qc_state->max_bit_fac, ptr_stack->sfb_num_relevant_lines[0],
+       ptr_stack->sfb_ld_energy[0], num_channels, 0, aot, ptr_scratch);
+@@ -129,15 +164,19 @@ IA_ERRORCODE ia_enhaacplus_enc_qc_main(
+                            ptr_stack->sfb_num_relevant_lines, num_channels, 0, frame_len_long);
+ 
+   for (ch = 0; ch < num_channels; ch++) {
+-    max_ch_dyn_bits[ch] =
+-        (pstr_el_bits->average_bits + pstr_el_bits->bit_res_level - 7 -
+-         pstr_qc_out_element->static_bits_used - pstr_qc_out_element->anc_bits_used);
++    max_total = pstr_el_bits->average_bits + pstr_el_bits->bit_res_level - end_bits;
++    if (drm_max > 0 && max_total > drm_max) max_total = drm_max;
++    max_ch_dyn_bits[ch] = max_total - pstr_qc_out_element->static_bits_used -
++                          pstr_qc_out_element->anc_bits_used;
+ 
+     max_ch_dyn_bits[ch] = (WORD32)floor(ch_bit_dist[ch] * (FLOAT32)(max_ch_dyn_bits[ch]));
+   }
+ 
+   pstr_qc_out_element->dyn_bits_used = 0;
+ 
++  {
++  /* exact DRM frames: bits a channel leaves unused go to the next one */
++  WORD32 drm_carry = 0;
+   for (ch = 0; ch < num_channels; ch++) {
+     /* now loop until bitstream constraints (ch_dyn_bits < maxChDynBits)
+        are fulfilled */
+@@ -198,7 +237,7 @@ IA_ERRORCODE ia_enhaacplus_enc_qc_main(
+           psy_out_ch[ch]->sfb_per_group,
+           psy_out_ch[ch]->sfb_offsets, &pstr_qc_out_ch[ch]->section_data,
+           pstr_qc_state->side_info_tab_long, pstr_qc_state->side_info_tab_short,
+-          pstr_aac_tables->pstr_huff_tab, pstr_qc_state->qc_scr.shared_buffer_2, aot,
++          pstr_aac_tables->pstr_huff_tab, pstr_qc_state->qc_scr.shared_buffer_2, aot, drm_mode,
+           &ch_dyn_bits);
+ 
+       if (err_code != IA_NO_ERROR) {
+@@ -233,11 +272,69 @@ IA_ERRORCODE ia_enhaacplus_enc_qc_main(
+ 
+     } while (!constraints_fulfilled);
+ 
++    if (drm_min > 0 && !(*is_gain_limited)) {
++      /* Bits below the transmitter's minimum frame size would only be padding: refine
++         the quantisation (lower global gain = finer steps everywhere) while the
++         channel stays below its share of that minimum (and below its maximum). */
++      WORD32 min_dyn = (WORD32)floor(ch_bit_dist[ch] *
++                                     (FLOAT32)(drm_min - pstr_qc_out_element->static_bits_used -
++                                               pstr_qc_out_element->anc_bits_used));
++      WORD32 avail = MIN(min_dyn + drm_carry, max_ch_dyn_bits[ch] + drm_carry);
++      WORD32 good_gain = pstr_qc_out_ch[ch]->global_gain;
++      WORD32 good_bits = ch_dyn_bits, tried = 0;
++      while (good_gain > 0 && tried < 40) {
++        WORD32 bits, max_val;
++        tried++;
++        ixheaace_drm_requantize(psy_out_ch[ch], pstr_qc_out_ch[ch], ptr_stack, good_gain - 1);
++        max_val = iaace_calc_max_val_in_sfb(
++            psy_out_ch[ch]->sfb_count, psy_out_ch[ch]->max_sfb_per_grp,
++            psy_out_ch[ch]->sfb_per_group, psy_out_ch[ch]->sfb_offsets,
++            pstr_qc_out_ch[ch]->quant_spec, pstr_qc_out_ch[ch]->max_val_in_sfb);
++        if (max_val > MAXIMUM_QUANT) break;
++        err_code = ia_enhaacplus_enc_dyn_bitcount(
++            pstr_qc_out_ch[ch]->quant_spec, pstr_qc_out_ch[ch]->max_val_in_sfb,
++            pstr_qc_out_ch[ch]->scalefactor, psy_out_ch[ch]->window_sequence,
++            psy_out_ch[ch]->sfb_count, psy_out_ch[ch]->max_sfb_per_grp,
++            psy_out_ch[ch]->sfb_per_group, psy_out_ch[ch]->sfb_offsets,
++            &pstr_qc_out_ch[ch]->section_data, pstr_qc_state->side_info_tab_long,
++            pstr_qc_state->side_info_tab_short, pstr_aac_tables->pstr_huff_tab,
++            pstr_qc_state->qc_scr.shared_buffer_2, aot, drm_mode, &bits);
++        if (err_code != IA_NO_ERROR) return err_code;
++        if (bits >= avail) break;
++        good_gain--;
++        good_bits = bits;
++      }
++      if (tried > 0) {
++        /* back to the last state that fits */
++        WORD32 bits;
++        pstr_qc_out_ch[ch]->global_gain = good_gain;
++        ixheaace_drm_requantize(psy_out_ch[ch], pstr_qc_out_ch[ch], ptr_stack, good_gain);
++        iaace_calc_max_val_in_sfb(psy_out_ch[ch]->sfb_count, psy_out_ch[ch]->max_sfb_per_grp,
++                                  psy_out_ch[ch]->sfb_per_group, psy_out_ch[ch]->sfb_offsets,
++                                  pstr_qc_out_ch[ch]->quant_spec,
++                                  pstr_qc_out_ch[ch]->max_val_in_sfb);
++        err_code = ia_enhaacplus_enc_dyn_bitcount(
++            pstr_qc_out_ch[ch]->quant_spec, pstr_qc_out_ch[ch]->max_val_in_sfb,
++            pstr_qc_out_ch[ch]->scalefactor, psy_out_ch[ch]->window_sequence,
++            psy_out_ch[ch]->sfb_count, psy_out_ch[ch]->max_sfb_per_grp,
++            psy_out_ch[ch]->sfb_per_group, psy_out_ch[ch]->sfb_offsets,
++            &pstr_qc_out_ch[ch]->section_data, pstr_qc_state->side_info_tab_long,
++            pstr_qc_state->side_info_tab_short, pstr_aac_tables->pstr_huff_tab,
++            pstr_qc_state->qc_scr.shared_buffer_2, aot, drm_mode, &bits);
++        if (err_code != IA_NO_ERROR) return err_code;
++        ch_dyn_bits = bits;
++        (VOID)good_bits;
++      }
++      drm_carry = avail - ch_dyn_bits;
++      if (drm_carry < 0) drm_carry = 0;
++    }
++
+     pstr_qc_out_element->dyn_bits_used += ch_dyn_bits;
+ 
+     pstr_qc_out_ch[ch]->grouping_mask = psy_out_ch[ch]->grouping_mask;
+     pstr_qc_out_ch[ch]->win_shape = psy_out_ch[ch]->window_shape;
+   }
++  }
+ 
+   pstr_adj_thr_elem->dyn_bits_last = pstr_qc_out_element->dyn_bits_used;
+   {
+@@ -247,6 +344,9 @@ IA_ERRORCODE ia_enhaacplus_enc_qc_main(
+                                                          pstr_qc_out_element->anc_bits_used);
+ 
+     pstr_qc_out_element->fill_bits = MAX(0, (delta_bit_res - bit_res_space));
++    if (drm_mode) {
++      pstr_qc_out_element->fill_bits = 0; /* padding is written by the DRM AU writer */
++    }
+   }
+ 
+   return IA_NO_ERROR;
+diff --git a/encoder/ixheaace_sbr.h b/encoder/ixheaace_sbr.h
+index a7205b9..e3a1c27 100644
+--- a/encoder/ixheaace_sbr.h
++++ b/encoder/ixheaace_sbr.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -53,6 +54,7 @@ struct ixheaace_str_sbr_config_data {
+ };
+ 
+ struct ixheaace_str_sbr_env_data {
++  WORD32 is_drm; /* DRM SBR syntax (ETSI ES 201 980) */
+   WORD32 sbr_xpos_ctrl;
+   ixheaace_freq_res freq_res_fix;
+   ixheaace_invf_mode sbr_invf_mode;
+diff --git a/encoder/ixheaace_sbr_cmondata.h b/encoder/ixheaace_sbr_cmondata.h
+index 402ae84..eaab71e 100644
+--- a/encoder/ixheaace_sbr_cmondata.h
++++ b/encoder/ixheaace_sbr_cmondata.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -31,6 +32,7 @@ struct ixheaace_str_common_data {
+   ixheaace_bit_buf str_sbr_bit_buf_prev;
+   WORD32 prev_bit_buf_write_offset;
+   WORD32 prev_bit_buf_read_offset;
++  WORD32 is_drm; /* DRM SBR syntax */
+ };
+ 
+ typedef struct ixheaace_str_common_data *ixheaace_pstr_common_data;
+diff --git a/encoder/ixheaace_sbr_crc.c b/encoder/ixheaace_sbr_crc.c
+index 75f2821..b956873 100644
+--- a/encoder/ixheaace_sbr_crc.c
++++ b/encoder/ixheaace_sbr_crc.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <string.h>
+@@ -57,7 +58,10 @@ VOID ixheaace_init_sbr_bitstream(ixheaace_pstr_common_data pstr_cmon_data,
+   ixheaace_reset_bitbuf(&pstr_cmon_data->str_sbr_bit_buf, ptr_memory_base, memory_size);
+ 
+   pstr_cmon_data->str_tmp_write_bit_buf = pstr_cmon_data->str_sbr_bit_buf;
+-  if (HEAAC_SBR == sbr_codec) {
++  if ((HEAAC_SBR == sbr_codec) && pstr_cmon_data->is_drm) {
++    /* DRM: 8-bit SBR CRC first, no extension type (ETSI ES 201 980 5.3.1) */
++    ixheaace_write_bits(&pstr_cmon_data->str_sbr_bit_buf, 0, 8);
++  } else if (HEAAC_SBR == sbr_codec) {
+     ixheaace_write_bits(&pstr_cmon_data->str_sbr_bit_buf, 0, SI_FILL_EXTENTION_BITS);
+ 
+     if (crc_active) {
+@@ -74,6 +78,26 @@ VOID ixheaace_assemble_sbr_bitstream(ixheaace_pstr_common_data pstr_cmon_data,
+ 
+   sbr_load = pstr_cmon_data->sbr_hdr_bits + pstr_cmon_data->sbr_data_bits;
+ 
++  if ((HEAAC_SBR == sbr_codec) && pstr_cmon_data->is_drm) {
++    /* DRM: CRC-8 (x^8+x^4+x^3+x^2+1, preset 0xFF, sent inverted) over the SBR data that
++       follows it, no byte alignment (the data is read backwards from the end of the AU) */
++    UWORD32 crc = 0xFF;
++    WORD32 k;
++    ixheaace_bit_buf tmp = pstr_cmon_data->str_sbr_bit_buf;
++    /* all bits written after the CRC (sbr_data_bits does not count the PS extension) */
++    sbr_load = ia_enhaacplus_enc_get_bits_available(&pstr_cmon_data->str_sbr_bit_buf) - 8;
++    ixheaace_readbits(&tmp, 8);
++    for (k = 0; k < sbr_load; k++) {
++      UWORD32 bit = ixheaace_readbits(&tmp, 1);
++      UWORD32 fb = ((crc >> 7) & 1) ^ bit;
++      crc = (crc << 1) & 0xFF;
++      if (fb) crc ^= 0x1D;
++    }
++    pstr_cmon_data->sbr_fill_bits = 0;
++    ixheaace_write_bits(&pstr_cmon_data->str_tmp_write_bit_buf, (~crc) & 0xFF, 8);
++    return;
++  }
++
+   if (HEAAC_SBR == sbr_codec) {
+     sbr_load += SI_FILL_EXTENTION_BITS;
+   }
+diff --git a/encoder/ixheaace_sbr_enc_struct.h b/encoder/ixheaace_sbr_enc_struct.h
+index 9b0235c..a169f21 100644
+--- a/encoder/ixheaace_sbr_enc_struct.h
++++ b/encoder/ixheaace_sbr_enc_struct.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -69,6 +70,7 @@ struct ixheaace_str_sbr_enc {
+   UWORD32 sbr_payload_prev[IXHEAACE_MAX_PAYLOAD_SIZE / (sizeof(WORD32))];
+   UWORD32 sbr_payload[IXHEAACE_MAX_PAYLOAD_SIZE / (sizeof(WORD32))];
+   UWORD32 sbr_payload_size;
++  WORD32 sbr_payload_bits; /* exact payload length (DRM SBR is not byte aligned) */
+   WORD32 *ptr_common_buffer1;
+   WORD32 *ptr_common_buffer2;
+   ixheaace_str_sbr_enc_scratch *ptr_sbr_enc_scr;
+diff --git a/encoder/ixheaace_sbr_main.c b/encoder/ixheaace_sbr_main.c
+index 72c4a8d..280273a 100644
+--- a/encoder/ixheaace_sbr_main.c
++++ b/encoder/ixheaace_sbr_main.c
+@@ -199,6 +199,7 @@ static IA_ERRORCODE ixheaace_create_env_channel(
+     pstr_env->enc_env_data.freq_res_fix = FREQ_RES_HIGH;
+   }
+ 
++  pstr_env->enc_env_data.is_drm = params->is_drm;
+   pstr_env->enc_env_data.sbr_xpos_mode = (ixheaace_sbr_xpos_mode)params->sbr_xpos_mode;
+   pstr_env->enc_env_data.sbr_xpos_ctrl = params->sbr_xpos_ctrl;
+ 
+@@ -605,6 +606,7 @@ VOID ixheaace_initialize_sbr_defaults(ixheaace_pstr_sbr_cfg pstr_config) {
+   pstr_config->sbr_harmonic = 0;
+   pstr_config->sbr_ratio_idx = 0;  // NO_SBR
+   pstr_config->use_low_freq_res = 0;
++  pstr_config->is_drm = 0;
+ }
+ 
+ static IA_ERRORCODE ia_enhaacplus_enc_update_freq_band_tab(
+@@ -729,6 +731,8 @@ ixheaace_env_encode_frame(ixheaace_pstr_sbr_enc pstr_env_encoder, FLOAT32 *ptr_s
+     ixheaace_assemble_sbr_bitstream(&pstr_env_encoder->str_cmon_data,
+                                     pstr_env_encoder->str_sbr_cfg.sbr_codec);
+ 
++    pstr_env_encoder->sbr_payload_bits =
++        ia_enhaacplus_enc_get_bits_available(&pstr_env_encoder->str_cmon_data.str_sbr_bit_buf);
+     pstr_env_encoder->sbr_payload_size =
+         ((ia_enhaacplus_enc_get_bits_available(&pstr_env_encoder->str_cmon_data.str_sbr_bit_buf) +
+           7) /
+@@ -750,6 +754,10 @@ ixheaace_env_encode_frame(ixheaace_pstr_sbr_enc pstr_env_encoder, FLOAT32 *ptr_s
+   return err_code;
+ }
+ 
++WORD32 ixheaace_sbr_get_payload_bits(ixheaace_pstr_sbr_enc pstr_env_enc) {
++  return pstr_env_enc->sbr_payload_bits;
++}
++
+ WORD32 ixheaace_sbr_enc_scr_size(VOID) {
+   return IXHEAAC_GET_SIZE_ALIGNED(sizeof(ixheaace_str_sbr_enc_scratch), BYTE_ALIGN_8);
+ }
+@@ -995,7 +1003,11 @@ ixheaace_env_open(ixheaace_pstr_sbr_enc *pstr_env_encoder, ixheaace_pstr_sbr_cfg
+   } else {
+     pstr_env_enc->str_sbr_bs.count_send_header_data = 0;
+   }
+-  if (params->send_header_data_time > 0) {
++  pstr_env_enc->str_cmon_data.is_drm = params->is_drm;
++  if (params->is_drm) {
++    /* DRM receivers may tune in at any frame: SBR header in every AU */
++    pstr_env_enc->str_sbr_bs.nr_send_header_data = 1;
++  } else if (params->send_header_data_time > 0) {
+     pstr_env_enc->str_sbr_bs.nr_send_header_data = (WORD32)(
+         params->send_header_data_time * 0.001 * pstr_env_enc->str_sbr_cfg.sample_freq /
+         (params->frame_flag_960 ? 1920 : 2048));
+diff --git a/encoder/ixheaace_sbr_main.h b/encoder/ixheaace_sbr_main.h
+index f84dccd..89694f8 100644
+--- a/encoder/ixheaace_sbr_main.h
++++ b/encoder/ixheaace_sbr_main.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -85,6 +86,7 @@ typedef struct ixheaace_str_sbr_cfg {
+   WORD32 hq_esbr;
+   ixheaace_sbr_codec_type sbr_codec;
+   WORD32 use_low_freq_res;
++  WORD32 is_drm; /* DRM: SBR CRC-8, no extension type/alignment, header in every frame */
+ } ixheaace_str_sbr_cfg, *ixheaace_pstr_sbr_cfg;
+ 
+ typedef struct ixheaace_str_sbr_enc *ixheaace_pstr_sbr_enc;
+@@ -144,4 +146,6 @@ VOID ia_enhaacplus_enc_get_shared_bufs(VOID *scr, WORD32 **shared_buf1, WORD32 *
+                                        WORD32 **shared_buf3, WORD8 **shared_buf4,
+                                        WORD32 aacenc_blocksize);
+ VOID ia_enhaacplus_enc_get_scratch_bufs(VOID *scr, FLOAT32 **shared_buf1_ring,
+-                                        FLOAT32 **shared_buf2_ring);
+\ No newline at end of file
++                                        FLOAT32 **shared_buf2_ring);
++/* exact length of the last SBR payload in bits (DRM) */
++WORD32 ixheaace_sbr_get_payload_bits(ixheaace_pstr_sbr_enc pstr_env_enc);
+diff --git a/encoder/ixheaace_sbr_write_bitstream.c b/encoder/ixheaace_sbr_write_bitstream.c
+index 6e06b17..ebe9303 100644
+--- a/encoder/ixheaace_sbr_write_bitstream.c
++++ b/encoder/ixheaace_sbr_write_bitstream.c
+@@ -586,7 +586,11 @@ static IA_ERRORCODE ixheaace_encode_sbr_single_channel_element(
+   IA_ERRORCODE err_code = IA_NO_ERROR;
+ 
+   if (sbr_codec != USAC_SBR) {
+-    payload_cnt_bits += ixheaace_write_bits(pstr_bs_handle, 0, 1);
++    payload_cnt_bits += ixheaace_write_bits(pstr_bs_handle, 0, 1); /* bs_data_extra */
++    if (pstr_sbr_env_info->is_drm) {
++      /* DRM sbr_single_channel_element(): bs_coupling (0) follows bs_data_extra */
++      payload_cnt_bits += ixheaace_write_bits(pstr_bs_handle, 0, SI_SBR_COUPLING_BITS);
++    }
+   } else {
+     if (pstr_sbr_env_info->harmonic_sbr) {
+       // USAC Harmonic SBR data
+diff --git a/encoder/ixheaace_static_bits.c b/encoder/ixheaace_static_bits.c
+index 3fe26bb..aebd3ee 100644
+--- a/encoder/ixheaace_static_bits.c
++++ b/encoder/ixheaace_static_bits.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <stddef.h>
+@@ -131,6 +132,28 @@ static WORD32 ia_enhaacplus_enc_count_tns_bits(
+   return (ia_enhaacplus_enc_tns_count(pstr_tns_info, block_type));
+ }
+ 
++/* DRM aac_scalable_main_element(): header (ics_reserved_bit, window_sequence, window_shape,
++   max_sfb, scale_factor_grouping, ms info) and per channel tns_data_present, ltp_data_present,
++   global_gain, length_of_reordered_spectral_data, length_of_longest_codeword and tns_data().
++   Section, scale factor and spectral bits are dynamic. */
++WORD32 ixheaace_drm_count_static_bitdemand(ixheaace_psy_out_channel **psy_out_ch,
++                                           ixheaace_psy_out_element *pstr_psy_out_element,
++                                           WORD32 channels) {
++  WORD32 bits = 1 + 2 + 1, ch;
++  bits += (psy_out_ch[0]->window_sequence == SHORT_WINDOW) ? 4 + 7 : 6;
++  if (channels == 2) {
++    bits += 2 + ia_enhaacplus_enc_count_ms_mask_bits(
++                    psy_out_ch[0]->sfb_count, psy_out_ch[0]->sfb_per_group,
++                    psy_out_ch[0]->max_sfb_per_grp, &pstr_psy_out_element->tools_info);
++  }
++  for (ch = 0; ch < channels; ch++) {
++    bits += 1 + 1 + 8 + 14 + 6;
++    bits += ia_enhaacplus_enc_count_tns_bits(&(psy_out_ch[ch]->tns_info),
++                                             psy_out_ch[ch]->window_sequence);
++  }
++  return bits;
++}
++
+ WORD32 ia_enhaacplus_enc_count_static_bitdemand(
+     ixheaace_psy_out_channel **psy_out_ch,
+     ixheaace_psy_out_element *pstr_psy_out_element, WORD32 channels, WORD32 aot, WORD32 adts_flag,
+diff --git a/encoder/ixheaace_static_bits.h b/encoder/ixheaace_static_bits.h
+index 61cfbc9..c3deab8 100644
+--- a/encoder/ixheaace_static_bits.h
++++ b/encoder/ixheaace_static_bits.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -24,3 +25,7 @@ WORD32 ia_enhaacplus_enc_count_static_bitdemand(
+     ixheaace_psy_out_channel **psy_out_ch,
+     ixheaace_psy_out_element *pstr_psy_out_element, WORD32 channels, WORD32 aot, WORD32 adts_flag,
+     WORD32 stat_bits_flag, WORD32 flag_last_element);
++
++WORD32 ixheaace_drm_count_static_bitdemand(ixheaace_psy_out_channel **psy_out_ch,
++                                           ixheaace_psy_out_element *pstr_psy_out_element,
++                                           WORD32 channels);
+diff --git a/encoder/ixheaace_struct_def.h b/encoder/ixheaace_struct_def.h
+index cbf4a0b..db47805 100644
+--- a/encoder/ixheaace_struct_def.h
++++ b/encoder/ixheaace_struct_def.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -108,6 +109,8 @@ typedef struct ixheaace_state_struct {
+   WORD32 is_gain_limited;
+   WORD32 i_out_bits;
+   VOID *loudness_handle;
++  WORD32 drm_frame_bytes;     /* DRM: max size of the next AU, 0 = no limit */
++  WORD32 drm_frame_bytes_min; /* DRM: min size of the next AU, 0 = none */
+ } ixheaace_state_struct;
+ 
+ typedef struct ixheaace_api_struct {
+diff --git a/encoder/ixheaace_version_number.h b/encoder/ixheaace_version_number.h
+index 8a82b56..b353759 100644
+--- a/encoder/ixheaace_version_number.h
++++ b/encoder/ixheaace_version_number.h
+@@ -16,8 +16,10 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+-#define LIB_NAME "IXHEAACE"
++/* "+DRM": ETSI ES 201 980 access units (drm_mode), checked by DREAM before use */
++#define LIB_NAME "IXHEAACE+DRM"
+ #define ITTIAM_VER " : V2.0"
+diff --git a/encoder/ixheaace_write_bitstream.c b/encoder/ixheaace_write_bitstream.c
+index 9851f26..ecf3df0 100644
+--- a/encoder/ixheaace_write_bitstream.c
++++ b/encoder/ixheaace_write_bitstream.c
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #include <limits.h>
+@@ -826,3 +827,285 @@ IA_ERRORCODE ia_enhaacplus_enc_write_bitstream(
+ 
+   return IA_NO_ERROR;
+ }
++
++/* ---------------------------------------------------------------------------------------
++ * DRM access unit (ETSI ES 201 980 5.3.1 / ISO/IEC 14496-3 ER AAC with
++ * aacSectionDataResilienceFlag = 1 (VCB11), aacSpectralDataResilienceFlag = 1 (HCR),
++ * aacScalefactorDataResilienceFlag = 0). Element syntax as aac_scalable_main_element()
++ * of the main layer: header, per channel tns_data_present/ltp_data_present/side info with
++ * the HCR lengths, then tns_data(), the CRC-protected part ends here, then the reordered
++ * spectral data. Added for DREAM.
++ * ------------------------------------------------------------------------------------- */
++#include "ixheaace_drm.h"
++
++static WORD32 ixheaace_drm_sect_len_bits(WORD32 cnt, WORD32 block_type) {
++  WORD32 esc = (block_type == SHORT_WINDOW) ? SECT_ESC_VAL_SHORT : SECT_ESC_VAL_LONG;
++  WORD32 bits = (block_type == SHORT_WINDOW) ? SECT_BITS_SHORT : SECT_BITS_LONG;
++  return (cnt / esc + 1) * bits;
++}
++
++WORD32 ixheaace_drm_section_bits(const ixheaace_section_data *pstr_section_data) {
++  WORD32 i, bits = 0;
++  for (i = 0; i < pstr_section_data->num_of_sections; i++) {
++    WORD32 cb = pstr_section_data->section[i].code_book;
++    WORD32 cnt = pstr_section_data->section[i].sfb_cnt;
++    if (cb == CODE_BCK_ESC_NO) {
++      bits += IXHEAACE_DRM_SECT_CB_BITS * cnt;
++    } else {
++      bits += IXHEAACE_DRM_SECT_CB_BITS +
++              ixheaace_drm_sect_len_bits(cnt, pstr_section_data->block_type);
++    }
++  }
++  return bits;
++}
++
++static VOID ixheaace_drm_encode_section_data(const ixheaace_section_data *pstr_section_data,
++                                             ixheaace_bit_buf_handle pstr_bs) {
++  WORD32 i, j;
++  WORD32 esc = (pstr_section_data->block_type == SHORT_WINDOW) ? SECT_ESC_VAL_SHORT
++                                                                : SECT_ESC_VAL_LONG;
++  WORD32 len_bits =
++      (pstr_section_data->block_type == SHORT_WINDOW) ? SECT_BITS_SHORT : SECT_BITS_LONG;
++  for (i = 0; i < pstr_section_data->num_of_sections; i++) {
++    WORD32 cb = pstr_section_data->section[i].code_book;
++    WORD32 cnt = pstr_section_data->section[i].sfb_cnt;
++    if (cb == CODE_BCK_ESC_NO) {
++      /* VCB11: every ESC sfb is a section of its own, sect_len is implicit (1) */
++      for (j = 0; j < cnt; j++) ixheaace_write_bits(pstr_bs, cb, IXHEAACE_DRM_SECT_CB_BITS);
++    } else {
++      ixheaace_write_bits(pstr_bs, cb, IXHEAACE_DRM_SECT_CB_BITS);
++      while (cnt >= esc) {
++        ixheaace_write_bits(pstr_bs, esc, (UWORD8)len_bits);
++        cnt -= esc;
++      }
++      ixheaace_write_bits(pstr_bs, cnt, (UWORD8)len_bits);
++    }
++  }
++}
++
++static WORD32 ixheaace_drm_tns_present(const ixheaace_temporal_noise_shaping_params *pstr_tns,
++                                       WORD32 block_type) {
++  WORD32 i, num_windows = (block_type == SHORT_WINDOW) ? TRANS_FAC : 1;
++  for (i = 0; i < num_windows; i++)
++    if (pstr_tns->tns_active[i] == 1) return 1;
++  return 0;
++}
++
++/* tns_data() body (the presence flag is sent separately in the DRM element) */
++static VOID ixheaace_drm_encode_tns_body(ixheaace_temporal_noise_shaping_params tns,
++                                         WORD32 block_type, ixheaace_bit_buf_handle pstr_bs) {
++  WORD32 i, k, coef_bits;
++  WORD32 num_windows = (block_type == SHORT_WINDOW) ? TRANS_FAC : 1;
++  WORD32 is_short = (block_type == SHORT_WINDOW);
++  for (i = 0; i < num_windows; i++) {
++    ixheaace_write_bits(pstr_bs, tns.tns_active[i], (UWORD8)(is_short ? 1 : 2));
++    if (tns.tns_active[i]) {
++      UWORD32 tmp = ((tns.coef_res[i] == 4 ? 1 : 0) << ((is_short ? 4 : 6) + (is_short ? 3 : 5))) |
++                    tns.length[i] << (is_short ? 3 : 5) | tns.order[i];
++      ixheaace_write_bits(pstr_bs, tmp, (UWORD8)(1 + (is_short ? 4 : 6) + (is_short ? 3 : 5)));
++      if (tns.order[i]) {
++        ixheaace_write_bits(pstr_bs, FILTER_DIRECTION, 1);
++        if (tns.coef_res[i] == 4) {
++          coef_bits = 3;
++          for (k = 0; k < tns.order[i]; k++) {
++            if (tns.coef[i * TEMPORAL_NOISE_SHAPING_MAX_ORDER_SHORT + k] > 3 ||
++                tns.coef[i * TEMPORAL_NOISE_SHAPING_MAX_ORDER_SHORT + k] < -4) {
++              coef_bits = 4;
++              break;
++            }
++          }
++        } else {
++          coef_bits = 2;
++          for (k = 0; k < tns.order[i]; k++) {
++            if (tns.coef[i * TEMPORAL_NOISE_SHAPING_MAX_ORDER_SHORT + k] > 1 ||
++                tns.coef[i * TEMPORAL_NOISE_SHAPING_MAX_ORDER_SHORT + k] < -2) {
++              coef_bits = 3;
++              break;
++            }
++          }
++        }
++        ixheaace_write_bits(pstr_bs, -(coef_bits - tns.coef_res[i]), 1);
++        for (k = 0; k < tns.order[i]; k++) {
++          static const WORD32 rmask[] = {0, 1, 3, 7, 15};
++          ixheaace_write_bits(pstr_bs,
++                              tns.coef[i * TEMPORAL_NOISE_SHAPING_MAX_ORDER_SHORT + k] &
++                                  rmask[coef_bits],
++                              (UWORD8)coef_bits);
++        }
++      }
++    }
++  }
++}
++
++IA_ERRORCODE ixheaace_drm_write_au(ixheaace_element_info *pstr_element_info,
++                                   ixheaace_qc_out *pstr_qc_out, ixheaace_psy_out *pstr_psy_out,
++                                   ixheaace_aac_tables *pstr_aac_tables,
++                                   const UWORD8 *ptr_sbr_payload, WORD32 sbr_bits,
++                                   WORD32 min_bytes, WORD32 max_bytes, UWORD8 *ptr_out,
++                                   WORD32 out_size, WORD32 *ptr_out_bytes) {
++  ixheaace_bit_buf bb;
++  ixheaace_bit_buf_handle pstr_bs;
++  WORD32 nch = pstr_element_info->n_channels_in_el, ch, i;
++  ixheaace_qc_out_channel *qc_ch[2];
++  ixheaace_psy_out_channel *psy_ch[2];
++  ixheaace_drm_cw cw[2][IXHEAACE_DRM_MAX_CW]; /* ~16 KiB of stack, no static state */
++  UWORD8 hcr_buf[2][(1 << IXHEAACE_DRM_LEN_REORD_BITS) / 8 + 16];
++  WORD32 len_reord[2] = {0, 0}, longest[2] = {0, 0};
++  WORD32 crc_end, core_bits, total_bits, pos, trim_rounds = 0, mute = 0;
++
++  if (nch < 1 || nch > 2) return IA_EXHEAACE_INIT_FATAL_INVALID_ELEMENT_TYPE;
++  for (ch = 0; ch < nch; ch++) {
++    WORD32 idx = pstr_element_info->channel_index[ch];
++    qc_ch[ch] = pstr_qc_out->qc_channel[idx];
++    psy_ch[ch] = pstr_psy_out->psy_out_ch[idx];
++  }
++retry:
++  for (ch = 0; ch < nch; ch++) {
++    WORD32 num_cw, total;
++    if (mute) {
++      len_reord[ch] = longest[ch] = 0;
++      continue;
++    }
++    num_cw = ixheaace_drm_hcr_codewords(qc_ch[ch]->quant_spec, &qc_ch[ch]->section_data,
++                                        psy_ch[ch]->sfb_offsets, qc_ch[ch]->grouping_mask,
++                                        pstr_aac_tables->pstr_huff_tab, cw[ch], &total,
++                                        &longest[ch]);
++    if (num_cw < 0) return IA_EXHEAACE_EXE_FATAL_INVALID_HUFFMAN_BITS;
++    len_reord[ch] = total;
++    while (ixheaace_drm_hcr_place(cw[ch], num_cw, longest[ch], hcr_buf[ch], &len_reord[ch])) {
++      /* Rare (very few, very long escape codewords): a decoder may hold at most 64 bits of
++         a codeword plus segment. Limit the largest spectral values and retry; this only
++         shortens codewords, so the frame still fits. Values <= 15 never escape. */
++      WORD32 max_q = 0, lim, n_lines = psy_ch[ch]->sfb_offsets[qc_ch[ch]->section_data.sfb_cnt];
++      WORD16 *q = qc_ch[ch]->quant_spec;
++      for (i = 0; i < n_lines; i++) {
++        WORD32 a = q[i] < 0 ? -q[i] : q[i];
++        if (a > max_q) max_q = a;
++      }
++      if (max_q <= 15) return IA_EXHEAACE_EXE_FATAL_INVALID_HUFFMAN_BITS;
++      lim = max_q / 2 > 15 ? max_q / 2 : 15;
++      for (i = 0; i < n_lines; i++) {
++        if (q[i] > lim) q[i] = (WORD16)lim;
++        if (q[i] < -lim) q[i] = (WORD16)-lim;
++      }
++      num_cw = ixheaace_drm_hcr_codewords(qc_ch[ch]->quant_spec, &qc_ch[ch]->section_data,
++                                          psy_ch[ch]->sfb_offsets, qc_ch[ch]->grouping_mask,
++                                          pstr_aac_tables->pstr_huff_tab, cw[ch], &total,
++                                          &longest[ch]);
++      if (num_cw < 0) return IA_EXHEAACE_EXE_FATAL_INVALID_HUFFMAN_BITS;
++      len_reord[ch] = total;
++    }
++  }
++
++  memset(ptr_out, 0, out_size);
++  pstr_bs = ia_enhaacplus_enc_create_bitbuffer(&bb, ptr_out, out_size);
++  ixheaace_write_bits(pstr_bs, 0, 8); /* aac_crc_bits, filled in below */
++
++  /* aac_scalable_main_header() */
++  {
++    ixheaace_section_data *sd = &qc_ch[0]->section_data;
++    ixheaace_write_bits(pstr_bs, ICS_RESERVED_BIT, 1);
++    ixheaace_write_bits(pstr_bs, sd->block_type, 2);
++    ixheaace_write_bits(pstr_bs, qc_ch[0]->win_shape, 1);
++    if (sd->block_type == SHORT_WINDOW) {
++      ixheaace_write_bits(pstr_bs, mute ? 0 : sd->max_sfb_per_grp, 4);
++      ixheaace_write_bits(pstr_bs, qc_ch[0]->grouping_mask, TRANS_FAC - 1);
++    } else {
++      ixheaace_write_bits(pstr_bs, mute ? 0 : sd->max_sfb_per_grp, 6);
++    }
++    if (nch == 2 && mute) {
++      ixheaace_write_bits(pstr_bs, SI_MS_MASK_NONE, 2);
++    } else if (nch == 2) {
++      ia_enhaacplus_enc_encode_ms_info(sd->sfb_cnt, sd->sfb_per_group, sd->max_sfb_per_grp,
++                                       pstr_psy_out->psy_out_element.tools_info.ms_digest,
++                                       pstr_psy_out->psy_out_element.tools_info.ms_mask,
++                                       pstr_bs);
++    }
++  }
++  for (ch = 0; ch < nch; ch++) {
++    ixheaace_section_data *sd = &qc_ch[ch]->section_data;
++    ixheaace_write_bits(
++        pstr_bs, mute ? 0 : ixheaace_drm_tns_present(&psy_ch[ch]->tns_info, sd->block_type), 1);
++    ixheaace_write_bits(pstr_bs, 0, 1); /* ltp_data_present */
++    ia_enhaacplus_enc_encode_global_gain(qc_ch[ch]->global_gain, -1,
++                                         qc_ch[ch]->scalefactor[sd->first_scf], pstr_bs);
++    if (!mute) {
++      ixheaace_drm_encode_section_data(sd, pstr_bs);
++      ia_enhaacplus_enc_encode_scalefactor_data(qc_ch[ch]->max_val_in_sfb, sd,
++                                                qc_ch[ch]->scalefactor, pstr_bs,
++                                                pstr_aac_tables->pstr_huff_tab);
++    }
++    ixheaace_write_bits(pstr_bs, len_reord[ch], IXHEAACE_DRM_LEN_REORD_BITS);
++    ixheaace_write_bits(pstr_bs, longest[ch], IXHEAACE_DRM_LEN_LONGEST_BITS);
++  }
++  for (ch = 0; ch < nch; ch++) {
++    if (!mute &&
++        ixheaace_drm_tns_present(&psy_ch[ch]->tns_info, qc_ch[ch]->section_data.block_type)) {
++      ixheaace_drm_encode_tns_body(psy_ch[ch]->tns_info, qc_ch[ch]->section_data.block_type,
++                                   pstr_bs);
++    }
++  }
++  crc_end = ia_enhaacplus_enc_get_bits_available(pstr_bs);
++
++  core_bits = crc_end;
++  for (ch = 0; ch < nch; ch++) core_bits += len_reord[ch];
++  if (max_bytes <= 0 || max_bytes > out_size) max_bytes = out_size;
++  if (min_bytes > max_bytes) min_bytes = max_bytes;
++
++  if (core_bits + sbr_bits > 8 * max_bytes) {
++    /* The frame came out larger than the transmitter allows. Rare at normal rates (HCR
++       layout padding, an exact last access unit of a super frame); at very low rates the
++       side information alone may not fit. Step by step: silence the highest non-zero
++       spectral lines of the larger channel; then send an empty spectrum (max_sfb = 0);
++       last, leave out the SBR data (the decoder's SBR CRC check fails and it conceals). */
++    if (!mute && trim_rounds < 64) {
++      WORD32 k;
++      trim_rounds++;
++      for (k = 0; k < nch; k++) {
++        WORD32 c = (nch == 2 && (len_reord[1] > len_reord[0]) != (k == 1)) ? 1 : 0;
++        WORD32 n_lines = psy_ch[c]->sfb_offsets[qc_ch[c]->section_data.sfb_cnt];
++        WORD32 nz = 0, n_zero, n_zeroed = 0;
++        WORD16 *q = qc_ch[c]->quant_spec;
++        for (i = 0; i < n_lines; i++) nz += (q[i] != 0);
++        n_zero = nz / 8 > 4 ? nz / 8 : 4;
++        for (i = n_lines - 1; i >= 0 && n_zeroed < n_zero; i--) {
++          if (q[i] != 0) {
++            q[i] = 0;
++            n_zeroed++;
++          }
++        }
++        if (n_zeroed > 0) goto retry;
++      }
++    }
++    if (!mute) {
++      mute = 1;
++      goto retry;
++    }
++    sbr_bits = 0;
++  }
++
++  /* reordered_spectral_data() */
++  pos = crc_end;
++  for (ch = 0; ch < nch; ch++) {
++    if (pos + len_reord[ch] > out_size * 8) return IA_EXHEAACE_EXE_FATAL_INVALID_OUT_BYTES;
++    for (i = 0; i < len_reord[ch]; i++) {
++      ixheaace_drm_put_bits(ptr_out, pos + i, (hcr_buf[ch][i >> 3] >> (7 - (i & 7))) & 1, 1);
++    }
++    pos += len_reord[ch];
++  }
++
++  total_bits = ((core_bits + sbr_bits + 7) / 8) * 8;
++  if (min_bytes > 0 && total_bits < 8 * min_bytes) total_bits = 8 * min_bytes;
++  if ((max_bytes > 0 && total_bits > 8 * max_bytes) || total_bits > out_size * 8) {
++    *ptr_out_bytes = 0;
++    return IA_EXHEAACE_EXE_FATAL_INVALID_OUT_BYTES;
++  }
++  /* zero padding in between; SBR data read backwards from the last bit of the AU */
++  for (i = 0; i < sbr_bits; i++) {
++    ixheaace_drm_put_bits(ptr_out, total_bits - 1 - i,
++                          (ptr_sbr_payload[i >> 3] >> (7 - (i & 7))) & 1, 1);
++  }
++  ptr_out[0] = ixheaace_drm_crc8(ptr_out, 8, crc_end - 8);
++  *ptr_out_bytes = total_bits / 8;
++  return IA_NO_ERROR;
++}
+diff --git a/encoder/ixheaace_write_bitstream.h b/encoder/ixheaace_write_bitstream.h
+index 92b574e..f0100da 100644
+--- a/encoder/ixheaace_write_bitstream.h
++++ b/encoder/ixheaace_write_bitstream.h
+@@ -16,6 +16,7 @@
+  *
+  *****************************************************************************
+  * Originally developed and contributed by Ittiam Systems Pvt. Ltd, Bangalore
++ * Modified for DREAM (960-sample HE-AAC/HE-AACv2): see macx/patches/libxaac-*.patch
+  */
+ 
+ #pragma once
+@@ -39,3 +40,17 @@ IA_ERRORCODE ia_enhaacplus_enc_write_bitstream(
+     const UWORD8 *ptr_anc_bytes, ixheaace_aac_tables *pstr_aac_tables, FLAG flag_last_element,
+     WORD32 *write_program_config_element, WORD32 i_num_coup_channels, WORD32 i_channels_mask,
+     WORD32 i_samp_freq, WORD32 ele_idx, WORD32 aot, WORD32 *total_fill_bits);
++
++/* DRM (ETSI ES 201 980) access unit: aac_crc_bits, ER AAC element with VCB11 and HCR,
++   padding, SBR data bit-reversed at the end (see ixheaace_drm.c). The AU (CRC byte
++   included) is at least min_bytes and at most max_bytes long (0: no limit). Returns
++   IA_EXHEAACE_EXE_FATAL_INVALID_OUT_BYTES if the data does not fit max_bytes. */
++IA_ERRORCODE ixheaace_drm_write_au(ixheaace_element_info *pstr_element_info,
++                                   ixheaace_qc_out *pstr_qc_out, ixheaace_psy_out *pstr_psy_out,
++                                   ixheaace_aac_tables *pstr_aac_tables,
++                                   const UWORD8 *ptr_sbr_payload, WORD32 sbr_bits,
++                                   WORD32 min_bytes, WORD32 max_bytes, UWORD8 *ptr_out,
++                                   WORD32 out_size, WORD32 *ptr_out_bytes);
++
++/* bits of the DRM section data (5-bit codebooks; VCB11: one section per sfb, no length) */
++WORD32 ixheaace_drm_section_bits(const ixheaace_section_data *pstr_section_data);
+diff --git a/encoder/libxaacenc.cmake b/encoder/libxaacenc.cmake
+index 3a3772a..95535b6 100644
+--- a/encoder/libxaacenc.cmake
++++ b/encoder/libxaacenc.cmake
+@@ -130,7 +130,8 @@ list(
+      "${XAAC_ROOT}/encoder/ixheaace_tns_init.c"
+      "${XAAC_ROOT}/encoder/ixheaace_tns_params.c"
+      "${XAAC_ROOT}/encoder/ixheaace_write_adts_adif.c"
+-     "${XAAC_ROOT}/encoder/ixheaace_write_bitstream.c")
++     "${XAAC_ROOT}/encoder/ixheaace_write_bitstream.c"
++     "${XAAC_ROOT}/encoder/ixheaace_drm.c")
+ 
+ set(LIBXAACENC_INCLUDES ${XAAC_ROOT}/encoder ${XAAC_ROOT}/encoder/drc_src) 
+ include_directories(${LIBXAACENC_INCLUDES})

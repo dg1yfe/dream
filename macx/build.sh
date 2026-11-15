@@ -15,6 +15,8 @@
 # Local (non-Homebrew) deps, built into .deps/$ARCH (rebuilt when their patches change):
 #   fdk-aac 2.0.3 + macx/patches/fdk-aac-2.0.3-drm-encoder.patch – AAC/HE-AAC/xHE-AAC decoder
 #                   and DRM AAC/HE-AAC encoder (Homebrew formula disabled 2026-09)
+#   libxaacenc_drm – libxaac (Apache-2.0) + macx/patches/libxaac-*.patch: DRM AAC/HE-AAC/
+#                   HE-AACv2 encoder (macx/build-xaac.sh), dlopen()ed; used when fdk-aac has none
 #   libfaac_drm   – fallback DRM AAC encoder (macx/build-faac-drm.sh), dlopen()ed
 #   libfaad_drm   – patched faad2 2.11.4, fallback DRM AAC decoder (macx/build-faad-drm.sh), dlopen()ed
 set -eu
@@ -117,6 +119,21 @@ if [ ! -f "$PREFIX/lib/pkgconfig/fdk-aac.pc" ] || [ "$fdk_have" != "$fdk_want" ]
     cmake --build "$bld" -j "$JOBS"
     cmake --install "$bld"
     echo "$fdk_want" > "$FDK_STAMP"
+fi
+
+# ---------------------------------------------------------------- libxaac (DRM encoder)
+# libxaacenc_drm.dylib is dlopen()ed by XaacCodec (DRM encoder after fdk-aac, before
+# faac). Rebuilt when the script or its patches change (stamp = sha256 over both).
+if [ -x "$REPO/macx/build-xaac.sh" ]; then
+    XAAC_STAMP=$PREFIX/lib/libxaacenc_drm.dream-build
+    xaac_want=$(cat "$REPO/macx/build-xaac.sh" "$REPO"/macx/patches/libxaac-*.patch 2>/dev/null |
+                shasum -a 256 | cut -d' ' -f1)
+    xaac_have=$(cat "$XAAC_STAMP" 2>/dev/null || echo missing)
+    if [ ! -f "$PREFIX/lib/libxaacenc_drm.dylib" ] || [ "$xaac_have" != "$xaac_want" ]; then
+        echo "== building libxaacenc_drm (patched libxaac) into $PREFIX"
+        ARCH=$ARCH MACOSX_DEPLOYMENT_TARGET=$DEPS_DEPLOYMENT_TARGET "$REPO/macx/build-xaac.sh" "$PREFIX"
+        echo "$xaac_want" > "$XAAC_STAMP"
+    fi
 fi
 
 # ---------------------------------------------------------------- faac (DRM encoder)
