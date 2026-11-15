@@ -764,7 +764,7 @@ CSettings::UsageArguments()
 		"  --duration <r>               stop after <r> seconds of signal written (-t) or read (receiver)\n"
 		"  --filepace <b>               pace file input to real time (0: off, as fast as possible; 1: on, default)\n"
 		"Transmitter options (-t), stored in the ini file like the GUI settings:\n"
-		"  -f <s>                       read the audio input from file <s>\n"
+		"  -f <s>                       read the audio input from file <s> (repeated until --duration)\n"
 		"  --codec <s>                  AAC | Opus\n"
 		"  --aacmode <s>                mono | pstereo | stereo\n"
 		"  --aacrate <n>                AAC core sample rate 12000 | 24000\n"

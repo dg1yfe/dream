@@ -222,6 +222,8 @@ CPaCommon::ReInit()
 
     if (idev < 0 || idev >= int(devices.size()))
     {
+        if (!dev.empty())
+            cerr << "portaudio: device '" << dev << "' not found, using the default device" << endl;
         if (is_capture)
             pParameters.device = Pa_GetDefaultInputDevice();
         else
@@ -352,7 +354,24 @@ CPaCommon::Write(CVector < short >&psData)
 
     //cout << "Write: got " << bytes << " can put " << PaUtil_GetRingBufferWriteAvailable(&ringBuffer) << endl;
     if (PaUtil_GetRingBufferWriteAvailable(&ringBuffer) < int(bytes))
-        return false;			/* TODO use newer data in preference to draining old */
+    {
+        if (!blocking)
+            return false;		/* TODO use newer data in preference to draining old */
+
+        /* Blocking output (transmitter): the writer must be paced by the
+           device, otherwise it runs faster than real time and data is lost.
+           Make sure the stream runs and wait until there is room. */
+        if (Pa_IsStreamStopped(stream))
+            Pa_StartStream(stream);
+        int iWaitMs = 0;
+        while (PaUtil_GetRingBufferWriteAvailable(&ringBuffer) < int(bytes))
+        {
+            if (iWaitMs > 5000 || !Pa_IsStreamActive(stream))
+                return false;	/* device stalled, drop this block */
+            Pa_Sleep(5);
+            iWaitMs += 5;
+        }
+    }
 
     PaUtil_WriteRingBuffer(&ringBuffer, &psData[0], bytes);
     if (Pa_IsStreamStopped( stream ))
