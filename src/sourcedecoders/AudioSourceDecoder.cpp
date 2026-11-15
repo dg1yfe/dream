@@ -147,7 +147,12 @@ CAudioSourceDecoder::ProcessDataInternal(CParameter & Parameters)
 
             iResOutBlockSize = vecTempResBufOutCurLeft.Size();
 
-            bCurBlockOK = (eDecError == CAudioCodec::DECODER_ERROR_OK);
+            /* Mute unless the FAC is decoded correctly: a frame that passes its
+               8 bit CRC by chance while the signal is lost must not be played */
+            Parameters.Lock();
+            const bool bFACOK = Parameters.ReceiveStatus.FAC.GetStatus() == RX_OK;
+            Parameters.Unlock();
+            bCurBlockOK = (eDecError == CAudioCodec::DECODER_ERROR_OK) && bFACOK;
 
             /* Call decoder update */
             if (!bCodecUpdated)

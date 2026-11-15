@@ -62,7 +62,12 @@ playbackCallback(const void *inputBuffer, void *outputBuffer,
     (void) inputBuffer;			/* Prevent unused variable warning. */
     long bytes = framesPerBuffer*2*sizeof(short);
     long avail = PaUtil_GetRingBufferReadAvailable(&This->ringBuffer);
-    PaUtil_ReadRingBuffer(&This->ringBuffer, outputBuffer, (avail<bytes)?avail:bytes);
+    long got = PaUtil_ReadRingBuffer(&This->ringBuffer, outputBuffer, (avail<bytes)?avail:bytes);
+    /* Underrun (e.g. receiver lost the signal and produces no audio): output
+       silence. The host buffer is not cleared by PortAudio, leaving it would
+       replay stale samples every callback (a buzz at rate / framesPerBuffer). */
+    if (got < bytes)
+        memset(static_cast<char*>(outputBuffer) + got, 0, size_t(bytes - got));
     if (statusFlags&paOutputUnderflow)
         This->xruns++;
     return 0;

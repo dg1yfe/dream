@@ -75,15 +75,15 @@ ETypeRxStatus Reverb::apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REA
         {
             status = CRC_ERROR;
 
-            if (okToReverb)
+            /* Still no valid audio: output must be silent. Only the first bad
+               block fades out (above, with a short reverb cross-fade if
+               enabled); no reverb tail, no held block afterwards. */
+            for (int i = 0; i < iResOutBlockSize; i++)
             {
-                /* Add Reverberation effect */
-                for (int i = 0; i < iResOutBlockSize; i++)
-                {
-                    /* Mono reverberation signal */
-                    OldLeft[i] = OldRight[i] = AudioRev.ProcessSample(0, 0);
-                }
+                OldLeft[i] = 0.0;
+                OldRight[i] = 0.0;
             }
+            AudioRev.Clear();
         }
 
         /* Write zeros in current output buffer */
