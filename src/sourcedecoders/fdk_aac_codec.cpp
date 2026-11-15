@@ -30,13 +30,136 @@
 #include <fdk-aac/aacenc_lib.h>
 #include <fdk-aac/FDK_audio.h>
 #include "src/SDC/SDC.h"
+#include "../util/LibraryLoader.h"
 #include <cstring>
+#include <cstdlib>
 #include <iomanip>
+#include <mutex>
+#ifndef _WIN32
+# include <dlfcn.h>
+#endif
+
+/* ---------------------------------------------------------------------------
+ * Runtime binding of libfdk-aac (see fdk_dll.h). The function names used
+ * below are redirected to pointers resolved with dlsym(); nothing here needs
+ * libfdk-aac at link time.
+ * ------------------------------------------------------------------------- */
+static fdk_aacDecoder_GetLibInfo_t*    fdk_aacDecoder_GetLibInfo = nullptr;
+static fdk_aacDecoder_Open_t*          fdk_aacDecoder_Open = nullptr;
+static fdk_aacDecoder_ConfigRaw_t*     fdk_aacDecoder_ConfigRaw = nullptr;
+static fdk_aacDecoder_GetStreamInfo_t* fdk_aacDecoder_GetStreamInfo = nullptr;
+static fdk_aacDecoder_Fill_t*          fdk_aacDecoder_Fill = nullptr;
+static fdk_aacDecoder_DecodeFrame_t*   fdk_aacDecoder_DecodeFrame = nullptr;
+static fdk_aacDecoder_Close_t*         fdk_aacDecoder_Close = nullptr;
+static fdk_aacEncGetLibInfo_t*         fdk_aacEncGetLibInfo = nullptr;
+static fdk_aacEncOpen_t*               fdk_aacEncOpen = nullptr;
+static fdk_aacEncoder_SetParam_t*      fdk_aacEncoder_SetParam = nullptr;
+static fdk_aacEncEncode_t*             fdk_aacEncEncode = nullptr;
+static fdk_aacEncInfo_t*               fdk_aacEncInfo = nullptr;
+static fdk_aacEncClose_t*              fdk_aacEncClose = nullptr;
+
+#define aacDecoder_GetLibInfo    fdk_aacDecoder_GetLibInfo
+#define aacDecoder_Open          fdk_aacDecoder_Open
+#define aacDecoder_ConfigRaw     fdk_aacDecoder_ConfigRaw
+#define aacDecoder_GetStreamInfo fdk_aacDecoder_GetStreamInfo
+#define aacDecoder_Fill          fdk_aacDecoder_Fill
+#define aacDecoder_DecodeFrame   fdk_aacDecoder_DecodeFrame
+#define aacDecoder_Close         fdk_aacDecoder_Close
+#define aacEncGetLibInfo         fdk_aacEncGetLibInfo
+#define aacEncOpen               fdk_aacEncOpen
+#define aacEncoder_SetParam      fdk_aacEncoder_SetParam
+#define aacEncEncode             fdk_aacEncEncode
+#define aacEncInfo               fdk_aacEncInfo
+#define aacEncClose              fdk_aacEncClose
+
+#define FDK_FUNC(f) { #f, (void**)&fdk_##f, nullptr }
+static const LIBFUNC FdkLibFuncs[] = {
+    FDK_FUNC(aacDecoder_GetLibInfo),
+    FDK_FUNC(aacDecoder_Open),
+    FDK_FUNC(aacDecoder_ConfigRaw),
+    FDK_FUNC(aacDecoder_GetStreamInfo),
+    FDK_FUNC(aacDecoder_Fill),
+    FDK_FUNC(aacDecoder_DecodeFrame),
+    FDK_FUNC(aacDecoder_Close),
+    FDK_FUNC(aacEncGetLibInfo),
+    FDK_FUNC(aacEncOpen),
+    FDK_FUNC(aacEncoder_SetParam),
+    FDK_FUNC(aacEncEncode),
+    FDK_FUNC(aacEncInfo),
+    FDK_FUNC(aacEncClose),
+    { nullptr, nullptr, nullptr }
+};
+#undef FDK_FUNC
+
+#if defined(_WIN32)
+static const char* FdkLibNames[] = { "fdk-aac.dll", "libfdk-aac-2.dll", "libfdk-aac.dll", nullptr };
+#elif defined(__APPLE__)
+static const char* FdkLibNames[] = { "libfdk-aac.2.dylib", "libfdk-aac.dylib", nullptr };
+#else
+static const char* FdkLibNames[] = { "libfdk-aac.so.2", "libfdk-aac.so", nullptr };
+#endif
+
+static void* hFdkLib = nullptr;
+static std::string sFdkLibPath;
+
+static bool envFlag(const char* name)
+{
+    const char* v = getenv(name);
+    return v != nullptr && atoi(v) != 0;
+}
+
+static bool FdkLibDoLoad()
+{
+    if (envFlag("DREAM_NO_FDK")) {
+        cerr << "FDK library not loaded (DREAM_NO_FDK set): fdk-aac codec disabled" << endl;
+        return false;
+    }
+    hFdkLib = CLibraryLoader::Load(FdkLibNames, FdkLibFuncs);
+    if (hFdkLib == nullptr) {
+        cerr << "FDK library not found (";
+        for (int i = 0; FdkLibNames[i]; i++)
+            cerr << (i ? ", " : "") << FdkLibNames[i];
+        cerr << "): fdk-aac codec disabled, using faad/faac if available" << endl;
+        return false;
+    }
+#ifdef _WIN32
+    char buf[1024];
+    if (GetModuleFileNameA(HMODULE(hFdkLib), buf, sizeof(buf)) > 0)
+        sFdkLibPath = buf;
+#else
+    Dl_info dli;
+    if (dladdr(reinterpret_cast<void*>(fdk_aacDecoder_Open), &dli) != 0 && dli.dli_fname != nullptr)
+        sFdkLibPath = dli.dli_fname;
+#endif
+    if (sFdkLibPath.empty())
+        sFdkLibPath = "(unknown path)";
+    return true;
+}
+
+bool FdkLibLoad()
+{
+    static std::once_flag once;
+    static bool loaded = false;
+    std::call_once(once, [] {
+        loaded = FdkLibDoLoad();
+        if (loaded) {
+            cerr << "FDK library loaded: " << sFdkLibPath
+                 << " (DRM encoder: " << (FdkAacCodec::HasDrmEncoder() ? "yes" : "no") << ")" << endl;
+        }
+    });
+    return loaded;
+}
+
+std::string FdkLibPath()
+{
+    return FdkLibLoad() ? sFdkLibPath : std::string();
+}
 
 FdkAacCodec::FdkAacCodec() :
     hDecoder(nullptr), hEncoder(nullptr),bUsac(false),decode_buf(),
     bEncDrm(false), iEncCoreSampleRate(0), encInBuf(), encOutBuf()
 {
+    (void)FdkLibLoad(); /* logs which libfdk-aac was found, if any */
 }
 
 
@@ -62,6 +185,8 @@ static void aacinfo(LIB_INFO& inf) {
 string
 FdkAacCodec::DecGetVersion()
 {
+    if (!FdkLibLoad())
+        return "fdk-aac (library not found)";
     stringstream version;
     LIB_INFO info;
     aacinfo(info);
@@ -72,6 +197,8 @@ FdkAacCodec::DecGetVersion()
 bool
 FdkAacCodec::CanDecode(CAudioParam::EAudCod eAudioCoding)
 {
+    if (!FdkLibLoad())
+        return false;
     LIB_INFO linfo;
     aacinfo(linfo);
     if(eAudioCoding == CAudioParam::AC_AAC) {
@@ -218,7 +345,8 @@ FdkAacCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
 {
     unsigned type9Size;
     UCHAR *t9;
-    hDecoder = aacDecoder_Open (TRANSPORT_TYPE::TT_DRM, 3);
+    DecClose();
+    hDecoder = FdkLibLoad() ? aacDecoder_Open (TRANSPORT_TYPE::TT_DRM, 3) : nullptr;
 
     // provide a default value for iAudioSampleRate in case we can't do better. TODO xHEAAC
     int iDefaultSampleRate;
@@ -282,6 +410,8 @@ FdkAacCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
 
 CAudioCodec::EDecError FdkAacCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVector<_REAL>& left, CVector<_REAL>& right)
 {
+    if (hDecoder == nullptr)
+        return CAudioCodec::DECODER_ERROR_UNKNOWN;
     writeFile(audio_frame);
     vector<uint8_t> data;
     uint8_t* pData;
@@ -447,6 +577,8 @@ static UINT fdkEncCaps(FDK_MODULE_ID module)
 bool
 FdkAacCodec::HasDrmEncoder()
 {
+    if (fdk_aacEncGetLibInfo == nullptr)
+        return false;
     const UINT aac = fdkEncCaps(FDK_AACENC);
     const UINT tp = fdkEncCaps(FDK_TPENC);
     const UINT sbr = fdkEncCaps(FDK_SBRENC);
@@ -457,6 +589,8 @@ FdkAacCodec::HasDrmEncoder()
 string
 FdkAacCodec::EncGetVersion()
 {
+    if (!FdkLibLoad())
+        return "fdk-aac (library not found)";
     LIB_INFO info[FDK_MODULE_LAST];
     memset(info, 0, sizeof(info));
     FDKinitLibInfo(info);
@@ -475,6 +609,8 @@ FdkAacCodec::EncGetVersion()
 bool
 FdkAacCodec::CanEncode(CAudioParam::EAudCod eAudioCoding)
 {
+    if (!FdkLibLoad())
+        return false;
     switch (eAudioCoding) {
     case CAudioParam::AC_MPEGAAC:
         return true;
@@ -495,6 +631,8 @@ FdkAacCodec::EncOpen(const CAudioParam& AudioParam, unsigned long& lNumSampEncIn
     lNumSampEncIn = 0;
     lMaxBytesEncOut = 0;
     EncClose();
+    if (!FdkLibLoad())
+        return false;
 
     bEncDrm = (AudioParam.eAudioCoding == CAudioParam::AC_AAC);
     if (bEncDrm && !HasDrmEncoder()) {

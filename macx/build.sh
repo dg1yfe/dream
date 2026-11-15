@@ -6,6 +6,7 @@
 #   macx/build.sh --deps-only     only fetch/build the non-Homebrew deps
 #   macx/build.sh --brew          also 'brew install' missing Homebrew packages
 #   macx/build.sh --deploy        after building, make a self-contained Dream.app + dmg (macx/deploy.sh)
+#   macx/build.sh --deploy --with-fdk   ...and bundle libfdk-aac (private use only: FDK licence)
 #
 # Env: BUILD_DIR (default build/gui or build/console), BUILD_TYPE (Release),
 #      ARCH (uname -m), JOBS (sysctl hw.ncpu), PREFIX for local deps (.deps/$ARCH),
@@ -30,14 +31,15 @@ FDK_TAG=v2.0.3
 FDK_COMMIT=716f4394641d53f0d79c9ddac3fa93b03a49f278
 FDK_URL=https://github.com/mstorsjo/fdk-aac.git
 
-console=0; deps_only=0; do_brew=0; do_deploy=0
+console=0; deps_only=0; do_brew=0; do_deploy=0; with_fdk=0
 for a in "$@"; do
     case "$a" in
         --console) console=1 ;;
         --deps-only) deps_only=1 ;;
         --brew) do_brew=1 ;;
         --deploy) do_deploy=1 ;;
-        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
+        --with-fdk) with_fdk=1 ;;
+        -h|--help) sed -n '2,19p' "$0"; exit 0 ;;
         *) echo "unknown option: $a" >&2; exit 2 ;;
     esac
 done
@@ -162,7 +164,11 @@ else
     # smoke test: loads every dylib (catches rpath/dyld problems) and prints usage
     "$BUILD_DIR/Dream.app/Contents/MacOS/Dream" --console --help 2>&1 | head -1
     if [ $do_deploy = 1 ]; then
-        PREFIX=$PREFIX "$REPO/macx/deploy.sh" "$BUILD_DIR"
+        if [ $with_fdk = 1 ]; then
+            PREFIX=$PREFIX "$REPO/macx/deploy.sh" --with-fdk "$BUILD_DIR"
+        else
+            PREFIX=$PREFIX "$REPO/macx/deploy.sh" "$BUILD_DIR"
+        fi
     fi
     echo "run:  open $BUILD_DIR/Dream.app    (or $BUILD_DIR/Dream.app/Contents/MacOS/Dream for log output)"
 fi

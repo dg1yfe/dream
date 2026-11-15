@@ -81,8 +81,23 @@ CI jobs.
 DRM AAC/HE-AAC encoder) and **libfaac_drm** (fallback DRM AAC encoder, `macx/build-faac-drm.sh`).
 Other options: `--console` (no-Qt binary in `build/console/dream`), `--brew`
 (install missing Homebrew packages), `--deploy` (self-contained, ad-hoc signed
-`Dream.app` + `Dream.dmg` via `macx/deploy.sh`). Sound I/O uses PortAudio
+`Dream.app` + `Dream.dmg` via `macx/deploy.sh`; add `--with-fdk` to also bundle
+libfdk-aac, for private use only, see below). Sound I/O uses PortAudio
 (CoreAudio). On first use of a sound card input macOS asks for microphone access.
+
+### fdk-aac is loaded at runtime
+
+Dream is GPLv2; the Fraunhofer FDK AAC licence is not GPL compatible. Dream is
+therefore never linked against libfdk-aac: it is compiled against the fdk-aac
+headers only and loads `libfdk-aac.2.dylib` / `libfdk-aac.so.2` / `fdk-aac.dll` at
+runtime, like libfaad_drm and libfaac_drm. Without it, AAC is decoded by
+libfaad_drm and encoded by libfaac_drm (AAC-LC only). The log says which library
+was used (`FDK library loaded: <path> (DRM encoder: yes|no)` or `FDK library not
+found ...`). On macOS the search order is `Dream.app/Contents/Frameworks`, the
+binary's directory, its rpaths (dev builds: `.deps/<arch>/lib`), `$DREAM_LIB_PATH`,
+`/opt/homebrew/lib`, `/usr/local/lib`. A stock fdk-aac decodes; DRM encoding needs
+the patched build from `macx/build.sh`. `DREAM_NO_FDK=1` disables loading it
+(`DREAM_NO_FDK_ENCODER=1` only hides its DRM encoder).
 
 ### Generic CMake
 
@@ -91,14 +106,14 @@ Other options: `--console` (no-Qt binary in `build/console/dream`), `--brew`
 
 Required: Qt 6 (Core Gui Widgets Network Xml Svg), Qwt for Qt 6, fftw3, speexdsp,
 zlib, libpcap and one sound backend (PortAudio, PulseAudio or ALSA). Optional and
-auto-detected via pkg-config: fdk-aac, opus, libsndfile, hamlib, libgps, SoapySDR.
+auto-detected via pkg-config: fdk-aac (headers only, see above), opus, libsndfile, hamlib, libgps, SoapySDR.
 Point `CMAKE_PREFIX_PATH` (or `PKG_CONFIG_PATH`) at any custom prefix.
 
 | option | default | meaning |
 |---|---|---|
 | `DREAM_CONSOLE_ONLY` | OFF | build only the console binary, no Qt needed |
 | `DREAM_BUILD_CONSOLE` | OFF | also build `dream-console` next to the GUI |
-| `DREAM_WITH_FDK_AAC` / `DREAM_REQUIRE_FDK_AAC` | ON / OFF | use fdk-aac if found / fail if missing |
+| `DREAM_WITH_FDK_AAC` / `DREAM_REQUIRE_FDK_AAC` | ON / OFF | build runtime-loaded fdk-aac support if its headers are found / fail if missing |
 | `DREAM_WITH_USAC` | ON | xHE-AAC decoding (`HAVE_USAC`, needs fdk-aac) |
 | `DREAM_WITH_BWS` | OFF | BWS web viewer (needs QtWebEngine) |
 | `DREAM_WITH_{OPUS,SNDFILE,HAMLIB,GPS,SOAPYSDR,PORTAUDIO}` | ON | use library if found |

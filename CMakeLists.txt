@@ -10,10 +10,12 @@
 #   -DDREAM_CONSOLE_ONLY=ON    console-only binary, no Qt at all (dream.pro CONFIG+=console)
 #   -DDREAM_BUILD_CONSOLE=ON   additionally build the console binary next to the GUI ("dream-console")
 #
-# fdk-aac is optional but strongly recommended (it is the AAC/xHE-AAC decoder):
-# it is found via pkg-config; point CMAKE_PREFIX_PATH or PKG_CONFIG_PATH at a
-# custom prefix. A prefix at <source>/.deps/<arch> (see macx/build.sh) is
-# picked up automatically.
+# fdk-aac (AAC/HE-AAC/xHE-AAC decoder, DRM encoder with the patch in macx/patches)
+# is LOADED AT RUNTIME (dlopen), never linked: its licence is not GPL compatible.
+# Only its headers are needed at build time (pkg-config / CMAKE_PREFIX_PATH; a
+# prefix at <source>/.deps/<arch>, see macx/build.sh, is picked up automatically).
+# Users add the library themselves (DREAM_LIB_PATH, Homebrew/system lib dirs, or
+# Dream.app/Contents/Frameworks); without it DREAM falls back to faad/faac.
 
 cmake_minimum_required(VERSION 3.21)
 project(dream VERSION 2.3.0 LANGUAGES C CXX)
@@ -32,8 +34,8 @@ endif()
 # ---------------------------------------------------------------------------
 option(DREAM_CONSOLE_ONLY   "Build only the console (no Qt) binary" OFF)
 option(DREAM_BUILD_CONSOLE  "Also build the console (no Qt) binary next to the GUI" OFF)
-option(DREAM_WITH_FDK_AAC   "Use fdk-aac (AAC/HE-AAC/xHE-AAC decoder) if found" ON)
-option(DREAM_REQUIRE_FDK_AAC "Fail configure if fdk-aac is not found" OFF)
+option(DREAM_WITH_FDK_AAC   "Build runtime-loaded fdk-aac support if the fdk-aac headers are found" ON)
+option(DREAM_REQUIRE_FDK_AAC "Fail configure if the fdk-aac headers are not found" OFF)
 option(DREAM_WITH_USAC      "Enable xHE-AAC (USAC) decoding via fdk-aac (HAVE_USAC)" ON)
 option(DREAM_WITH_OPUS      "Link libopus if found" ON)
 option(DREAM_WITH_SNDFILE   "Use libsndfile if found" ON)
@@ -146,7 +148,19 @@ macro(dream_optional_pkg flag prefix module)
     endif()
 endmacro()
 
-dream_optional_pkg(DREAM_WITH_FDK_AAC  FDKAAC     fdk-aac)
+# fdk-aac: headers only (the library is dlopen()ed at runtime, see fdk_dll.h)
+set(DREAM_HAVE_FDKAAC OFF)
+if(DREAM_WITH_FDK_AAC)
+    pkg_check_modules(FDKAAC QUIET fdk-aac)
+    find_path(FDKAAC_INCLUDE_DIR fdk-aac/aacenc_lib.h HINTS ${FDKAAC_INCLUDE_DIRS})
+    if(FDKAAC_INCLUDE_DIR AND EXISTS "${FDKAAC_INCLUDE_DIR}/fdk-aac/aacdecoder_lib.h")
+        set(DREAM_HAVE_FDKAAC ON)
+        if(NOT FDKAAC_VERSION)
+            set(FDKAAC_VERSION "headers")
+        endif()
+        set(FDKAAC_VERSION "${FDKAAC_VERSION}, headers ${FDKAAC_INCLUDE_DIR}, runtime-loaded")
+    endif()
+endif()
 dream_optional_pkg(DREAM_WITH_OPUS     OPUS       opus)
 dream_optional_pkg(DREAM_WITH_SNDFILE  SNDFILE    sndfile)
 dream_optional_pkg(DREAM_WITH_HAMLIB   HAMLIB     hamlib)
@@ -158,14 +172,15 @@ dream_optional_pkg(DREAM_WITH_ALSA     ALSA       alsa)
 dream_optional_pkg(DREAM_WITH_JACK     JACK       jack)
 
 if(DREAM_REQUIRE_FDK_AAC AND NOT DREAM_HAVE_FDKAAC)
-    message(FATAL_ERROR "fdk-aac required but not found. Build it (macx/build.sh does) and set "
+    message(FATAL_ERROR "fdk-aac headers required but not found. Build fdk-aac (macx/build.sh does) and set "
                         "CMAKE_PREFIX_PATH or PKG_CONFIG_PATH to its prefix.")
 elseif(DREAM_WITH_FDK_AAC AND NOT DREAM_HAVE_FDKAAC)
-    message(WARNING "fdk-aac not found: building WITHOUT the FDK AAC decoder. DRM AAC decoding will "
-                    "then rely on libfaad_drm being loadable at runtime.")
+    message(WARNING "fdk-aac headers not found: building WITHOUT FDK support. DRM AAC decoding/encoding "
+                    "will rely on libfaad_drm / libfaac_drm being loadable at runtime.")
 endif()
-if(DREAM_HAVE_FDKAAC)
-    # Before the Homebrew lib dir, so our fdk-aac wins over any other copy.
+if(APPLE AND DREAM_HAVE_FDKAAC AND FDKAAC_LIBRARY_DIRS)
+    # Not linked: only a runtime search hint for dev runs (dlopen of @rpath/libfdk-aac.2.dylib),
+    # placed before the Homebrew lib dir so a locally built (DRM-patched) fdk-aac wins.
     list(PREPEND DREAM_EXTRA_RPATHS ${FDKAAC_LIBRARY_DIRS})
     list(REMOVE_DUPLICATES DREAM_EXTRA_RPATHS)
 endif()
@@ -205,7 +220,8 @@ function(dream_setup_common target)
             target_compile_definitions(${target} PRIVATE HAVE_USAC)
         endif()
         target_sources(${target} PRIVATE ${DREAM_SRC}/sourcedecoders/fdk_aac_codec.cpp)
-        target_link_libraries(${target} PRIVATE PkgConfig::FDKAAC)
+        # headers only - libfdk-aac is NOT linked (runtime-loaded, licence)
+        target_include_directories(${target} PRIVATE "${FDKAAC_INCLUDE_DIR}")
     endif()
 
     if(DREAM_HAVE_OPUS)

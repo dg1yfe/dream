@@ -1,7 +1,13 @@
 #!/bin/sh
 # Make a self-contained, ad-hoc signed Dream.app and a .dmg (Homebrew Qt6, arm64 or x86_64).
 #
-#   macx/deploy.sh [BUILD_DIR]        default BUILD_DIR: build/gui
+#   macx/deploy.sh [--with-fdk] [BUILD_DIR]        default BUILD_DIR: build/gui
+#
+# libfdk-aac is NOT bundled by default: DREAM is GPLv2 and the Fraunhofer FDK AAC
+# licence is not GPL compatible, so DREAM only loads it at runtime if the user has
+# it (Dream.app/Contents/Frameworks, $DREAM_LIB_PATH, /opt/homebrew/lib, /usr/local/lib).
+# --with-fdk copies .deps/<arch>/lib/libfdk-aac.2.dylib into the bundle anyway -
+# for your own use only; do not redistribute such a bundle.
 #
 # Produces BUILD_DIR/deploy/Dream.app and BUILD_DIR/Dream.dmg; the build tree's
 # Dream.app is left untouched (it keeps using the Homebrew libraries in place).
@@ -9,6 +15,11 @@
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
+with_fdk=0
+if [ "${1:-}" = "--with-fdk" ]; then
+    with_fdk=1
+    shift
+fi
 BUILD_DIR=${1:-$REPO/build/gui}
 ARCH=${ARCH:-$(uname -m)}
 PREFIX=${PREFIX:-$REPO/.deps/$ARCH}
@@ -28,7 +39,15 @@ mkdir -p "$app/Contents/Frameworks"
 
 # Libraries DREAM dlopen()s by leaf name (not seen by macdeployqt): the DRM AAC
 # decoder/encoder fallbacks. They are found via the executable's LC_RPATH.
-for lib in "$PREFIX/lib/libfaac_drm.dylib" "$BREW_PREFIX/lib/libfaad_drm.dylib"; do
+libs="$PREFIX/lib/libfaac_drm.dylib $BREW_PREFIX/lib/libfaad_drm.dylib"
+if [ $with_fdk = 1 ]; then
+    [ -e "$PREFIX/lib/libfdk-aac.2.dylib" ] ||
+        { echo "error: $PREFIX/lib/libfdk-aac.2.dylib not found (macx/build.sh --deps-only)" >&2; exit 1; }
+    libs="$libs $PREFIX/lib/libfdk-aac.2.dylib"
+    echo "WARNING: bundling libfdk-aac (Fraunhofer FDK AAC licence, NOT GPL compatible)." >&2
+    echo "         The resulting Dream.app / Dream.dmg is for private use only - do not redistribute it." >&2
+fi
+for lib in $libs; do
     if [ -e "$lib" ]; then
         cp -L "$lib" "$app/Contents/Frameworks/$(basename "$lib")"
         chmod u+w "$app/Contents/Frameworks/$(basename "$lib")"
@@ -38,7 +57,7 @@ for lib in "$PREFIX/lib/libfaac_drm.dylib" "$BREW_PREFIX/lib/libfaad_drm.dylib";
     fi
 done
 
-# Qt frameworks + plugins + all non-system dylibs (incl. @rpath/libfdk-aac).
+# Qt frameworks + plugins + all non-system linked dylibs (libfdk-aac is not linked).
 "$MACDEPLOYQT" "$app" -always-overwrite -libpath="$PREFIX/lib" -libpath="$BREW_PREFIX/lib"
 
 # Drop build-machine rpaths, keep only the bundle's Frameworks dir.

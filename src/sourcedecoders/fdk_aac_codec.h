@@ -30,8 +30,7 @@
 #define FDK_AAC_CODEC_H_
 
 #include "AudioCodec.h"
-#include <fdk-aac/aacdecoder_lib.h>
-#include <fdk-aac/aacenc_lib.h>
+#include "fdk_dll.h"   /* fdk-aac headers; the library itself is loaded at runtime */
 
 class FdkAacCodec : public CAudioCodec
 {
@@ -69,6 +68,8 @@ protected:
     int iEncCoreSampleRate;   /* AAC core sample rate (12/24/48 kHz for DRM) */
     std::vector<INT_PCM> encInBuf;
     std::vector<UCHAR> encOutBuf;
+public:
+    /* libfdk-aac (loaded at runtime) has the DRM encoder patch */
     static bool HasDrmEncoder();
 };
 
