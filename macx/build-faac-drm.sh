@@ -17,7 +17,9 @@
 # e3e335f); tested 1.31.1: decodable mono with heavy frame-periodic amplitude
 # modulation, stereo undecodable. DRM was removed in faac >= 1.40.
 #
-# Patches from macx/patches/faac-1.28-*.patch are applied (DRM stereo fix).
+# Patches from macx/patches/faac-1.28-*.patch are applied: drm-hcr-short
+# (standard short-window HCR codeword order), drm-stereo (DRM CPE syntax),
+# drm-vcb11 (VCB11 codebook choice).
 #
 # The library is compiled directly with clang from the libfaac source list of
 # libfaac/Makefile.am (+ kiss_fft, -DDRM), so no autotools/bootstrap scripts

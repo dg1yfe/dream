@@ -104,10 +104,10 @@ public:
 	   the current directory and DYLD_FALLBACK_LIBRARY_PATH (/usr/local/lib,
 	   /usr/lib) - never Homebrew's /opt/homebrew/lib or the app bundle. So for
 	   every leaf name try, in order:
-	     1. <app>.app/Contents/Frameworks   (@executable_path/../Frameworks)
-	     2. @loader_path                    (directory of the dream binary)
-	     3. @rpath                          (LC_RPATH entries, e.g. .deps/<arch>/lib in dev builds)
-	     4. each directory in $DREAM_LIB_PATH (colon separated)
+	     1. each directory in $DREAM_LIB_PATH (colon separated; explicit user override)
+	     2. <app>.app/Contents/Frameworks   (@executable_path/../Frameworks)
+	     3. @loader_path                    (directory of the dream binary)
+	     4. @rpath                          (LC_RPATH entries, e.g. .deps/<arch>/lib in dev builds)
 	     5. DREAM_DEPS_LIBDIR               (compile-time define, e.g. <repo>/.deps/arm64/lib,
 	                                         so self-built codec libs win over Homebrew's)
 	     6. /opt/homebrew/lib               (Homebrew, Apple Silicon)
@@ -118,9 +118,6 @@ public:
 	static std::vector<std::string> Candidates(const char** LibraryNames)
 	{
 		std::vector<std::string> dirs;
-		dirs.push_back("@executable_path/../Frameworks");
-		dirs.push_back("@loader_path");
-		dirs.push_back("@rpath");
 		const char* env = getenv("DREAM_LIB_PATH");
 		if (env != nullptr)
 		{
@@ -136,6 +133,9 @@ public:
 				start = end + 1;
 			}
 		}
+		dirs.push_back("@executable_path/../Frameworks");
+		dirs.push_back("@loader_path");
+		dirs.push_back("@rpath");
 #ifdef DREAM_DEPS_LIBDIR
 		dirs.push_back(DREAM_DEPS_LIBDIR);
 #endif

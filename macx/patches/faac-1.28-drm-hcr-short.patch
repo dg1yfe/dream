@@ -1,0 +1,68 @@
+DREAM macOS port: faac 1.28 DRM - write short-window HCR codewords in the standard order.
+
+Upstream: https://github.com/knik0/faac tag faac1_28 (065f22740d34437fa74805a32008674d0a9b64e7)
+
+In ER AAC with HCR (mandatory in DRM, ETSI ES 201 980 5.4.1) the codewords of an
+EIGHT_SHORT_SEQUENCE are presorted unit-wise (unit = 4 lines): sfb, unit within
+the sfb, window (groups in order), codeword within the unit (Fraunhofer
+US 6975254; fdk-aac HcrInit()). faac 1.28 kept them window-major (its own first
+presorting step was disabled with "does not give expected results", because the
+reference decoder it was tested with, faad2, had the same mistake). Streams
+were therefore misdecoded by fdk-aac and by spec-correct (patched) faad2 on
+transients. Long blocks are unchanged.
+
+diff --git a/libfaac/bitstream.c b/libfaac/bitstream.c
+index fa83dc5..38bf278 100644
+--- a/libfaac/bitstream.c
++++ b/libfaac/bitstream.c
+@@ -1060,8 +1060,21 @@ typedef struct { /* codeword parameters */
+     unsigned int   cw_nr; /* codeword number in the window */
+     unsigned short cw_len; /* codeword lenght */
+     unsigned short num_data; /* number of data cells for codeword */
++    unsigned long  hcr_key; /* position in the HCR (unit-interleaved) order */
+ } cw_info_t;
+ 
++/* stable sort of codewords by hcr_key (insertion sort, num_cw <= FRAME_LEN) */
++static void SortCwByHcrKey(cw_info_t *cw, int n)
++{
++    int i, j;
++    for (i = 1; i < n; i++) {
++        cw_info_t t = cw[i];
++        for (j = i - 1; j >= 0 && cw[j].hcr_key > t.hcr_key; j--)
++            cw[j + 1] = cw[j];
++        cw[j + 1] = t;
++    }
++}
++
+ static int PutBitHcr(BitStream *bitStream,
+                      unsigned long curpos,
+                      unsigned long data,
+@@ -1148,6 +1161,16 @@ static int WriteReorderedSpectralData(CoderInfo *coderInfo,
+             cw_info[i].cw_nr = window_cw_cnt[cw_info[i].window];
+             window_cw_cnt[cw_info[i].window]++;
+ 
++            /* HCR order (ISO/IEC 14496-3, as read by fdk-aac): sfb, then unit
++               (4 lines) within the sfb, then window (groups in order), then
++               codeword within the unit (two for pair codebooks). Long blocks:
++               one window, so this is the natural order. */
++            {
++                unsigned long pos = (unsigned long)(coeff_cnt - last_sfb); /* line in this window's part of the sfb */
++                cw_info[i].hcr_key = ((((unsigned long)sfb_cnt * 64 + pos / 4) * MAX_SHORT_WINDOWS
++                                       + cw_info[i].window) * 4) + (pos % 4);
++            }
++
+             coeff_cnt += cw_info[i].num_sl_cw;
+             if (coeff_cnt - last_sfb >= cur_sfb_len) {
+                 last_sfb += cur_sfb_len;
+@@ -1209,6 +1232,11 @@ static int WriteReorderedSpectralData(CoderInfo *coderInfo,
+             for (i = 0; i < num_cw; i++) {
+                 cw_info_preso[i] = cw_info[i]; /* just copy */
+             }
++            /* DREAM macOS port patch: faac wrote short-window codewords in
++               window-major order (matching old faad2, which read them the same
++               wrong way); interleave them unit-wise as the standard requires */
++            if (coderInfo->block_type == ONLY_SHORT_WINDOW)
++                SortCwByHcrKey(cw_info_preso, num_cw);
+         }
+ 
+         /* presorting (second presorting step) */

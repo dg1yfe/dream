@@ -207,7 +207,8 @@ AacCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
     if (hFaadDecoder != nullptr)
     {
         int iDRMchanMode = DRMCH_MONO;
-        /* Only 12 kHz and 24 kHz is allowed */
+        /* AAC core rates per ETSI ES 201 980 SDC type 9 (audioparam.cpp): 12 and
+           24 kHz (robustness modes A-D), 48 kHz (mode E / DRM+) */
         switch (AudioParam.eAudioSamplRate)
         {
         case CAudioParam::AS_12KHZ:
@@ -218,7 +219,13 @@ AacCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
             iAACSampleRate = 24000;
             break;
 
+        case CAudioParam::AS_48KHZ:
+            iAACSampleRate = 48000;
+            break;
+
         default:
+            cerr << "AacCodec: unsupported AAC sampling rate index "
+                 << int(AudioParam.eAudioSamplRate) << ", assuming 12 kHz" << endl;
             break;
         }
         /* Number of channels for AAC: Mono, PStereo, Stereo */
@@ -283,10 +290,32 @@ AacCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVect
         psDecOutSampleBuf = (_SAMPLE*) NeAACDecDecode(hFaadDecoder, &DecFrameInfo, &vecbyPrepAudioFrame[0], vecbyPrepAudioFrame.size());
     }
     if(DecFrameInfo.error) {
-        return CAudioCodec::DECODER_ERROR_UNKNOWN;
+        /* rate-limited log: first 10, then every 100th */
+        static unsigned long nErrors = 0;
+        nErrors++;
+        if (nErrors <= 10 || nErrors % 100 == 0)
+            cerr << "faad: decode error " << int(DecFrameInfo.error)
+                 << (DecFrameInfo.error == 28 ? " (CRC error in DRM data)" : "")
+                 << " on " << audio_frame.size() << " byte frame (" << nErrors << " errors so far)" << endl;
+        return DecFrameInfo.error == 28 ? CAudioCodec::DECODER_ERROR_CRC : CAudioCodec::DECODER_ERROR_UNKNOWN;
     }
 
-    int iLenDecOutPerChan = AUD_DEC_TRANSFROM_LENGTH;
+    /* samples per channel actually decoded: 960 without SBR, 1920 with SBR
+       (also for PS, where faad returns 2 channels); never more than the caller's
+       buffers hold */
+    int iLenDecOutPerChan = 0;
+    if (DecFrameInfo.channels > 0)
+        iLenDecOutPerChan = int(DecFrameInfo.samples / DecFrameInfo.channels);
+    if (iLenDecOutPerChan == 0)
+    {
+        /* nothing decoded yet (e.g. first frame): output silence */
+        for (int i = 0; i < left.Size(); i++) left[i] = 0;
+        for (int i = 0; i < right.Size(); i++) right[i] = 0;
+    }
+    if (iLenDecOutPerChan > left.Size())
+        iLenDecOutPerChan = left.Size();
+    if (iLenDecOutPerChan > right.Size())
+        iLenDecOutPerChan = right.Size();
 
     if(psDecOutSampleBuf) // might be dummy decoder
     {
