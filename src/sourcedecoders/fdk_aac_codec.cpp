@@ -678,6 +678,20 @@ FdkAacCodec::EncUpdate(CAudioParam&)
 {
 }
 
+void
+FdkAacCodec::EncSetNextFrameSize(unsigned long lBytes)
+{
+    if (hEncoder == nullptr || !bEncDrm)
+        return;
+    /* AACENC_DRM_AU_BYTES is provided by the DRM encoder patch; ignore
+       failures (library without it keeps its peak bitrate control) */
+    if (lBytes > encOutBuf.size())
+        lBytes = encOutBuf.size();
+    /* numeric value: builds against stock fdk-aac headers as well */
+    const AACENC_PARAM AACENC_DRM_AU_BYTES_PARAM = AACENC_PARAM(0x0310);
+    aacEncoder_SetParam(hEncoder, AACENC_DRM_AU_BYTES_PARAM, UINT(lBytes));
+}
+
 string
 FdkAacCodec::fileName(const CParameter& Parameters) const
 {

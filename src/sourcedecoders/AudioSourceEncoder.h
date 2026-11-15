@@ -100,6 +100,8 @@ protected:
 	int						iNumBorders;
 	int						iAudioPayloadLen;
 	int						iNumHigherProtectedBytes;
+	int						iEncBitRate;		/* bitrate currently set in the encoder */
+	int						iEncBitRateMin;		/* lower limit for overflow back-off */
 
 #ifdef HAVE_SPEEX
     SpeexResampler			ResampleObj[MAX_ENCODED_CHANNELS];

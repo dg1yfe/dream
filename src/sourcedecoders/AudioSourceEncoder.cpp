@@ -28,12 +28,40 @@
 
 #include "AudioSourceEncoder.h"
 #include <iostream>
+#include <algorithm>
+#ifdef HAVE_LIBFDK_AAC
+# include "fdk_aac_codec.h"
+#endif
+
+
+/* Signal (SDC data entity type 9) what the encoder really produces. SBR is
+   in use iff the encoder takes 2 x 960 input samples per channel and frame
+   (fdk-aac with SBR; faac never does SBR). Parametric stereo is only possible
+   with SBR and a stereo input; otherwise the service is plain stereo. */
+static void SetEncodedAudioMode(CAudioParam& AudioParam, int iNumChannels,
+                                unsigned long lNumSampEncInPerChannel)
+{
+    if (AudioParam.eAudioCoding == CAudioParam::AC_AAC)
+    {
+        const bool bSBR = lNumSampEncInPerChannel == 2 * AUD_DEC_TRANSFROM_LENGTH;
+        AudioParam.eSBRFlag = bSBR ? CAudioParam::SB_USED : CAudioParam::SB_NOT_USED;
+        if (iNumChannels < 2)
+            AudioParam.eAudioMode = CAudioParam::AM_MONO;
+        else if (!(bSBR && AudioParam.eAudioMode == CAudioParam::AM_P_STEREO))
+            AudioParam.eAudioMode = CAudioParam::AM_STEREO;
+    }
+    else
+    {
+        AudioParam.eAudioMode =
+                iNumChannels >= 2 ? CAudioParam::AM_STEREO : CAudioParam::AM_MONO;
+    }
+}
 
 
 /* Implementation *************************************************************/
 
 CAudioSourceEncoderImplementation::CAudioSourceEncoderImplementation()
-    : bUsingTextMessage(false), codec(nullptr)
+    : bUsingTextMessage(false), codec(nullptr), iEncBitRate(0), iEncBitRateMin(0)
 {
     /* Initialize Audio Codec List */
     CAudioCodec::InitCodecList();
@@ -117,6 +145,23 @@ CAudioSourceEncoderImplementation::ProcessDataInternal(CParameter& Parameters,
                             Real2Sample(vecTempResBufOut[i][j * lNumSampEncIn + k]);
             }
 
+#ifdef HAVE_LIBFDK_AAC
+            /* fdk-aac (DRM): fill the audio super frame exactly. The length
+               of the last frame is implicit (remaining payload) and SBR data
+               is read backwards from the end of each frame, so no padding may
+               follow a frame. */
+            if (bDrmSf)
+            {
+                FdkAacCodec* fdk = dynamic_cast<FdkAacCodec*>(codec);
+                if (fdk != nullptr)
+                {
+                    const int iSlot = iAudioPayloadLen / iNumAudioFrames;
+                    const int iBytes = (j < iNumAudioFrames - 1) ? iSlot
+                            : iAudioPayloadLen - (iNumAudioFrames - 1) * iSlot;
+                    fdk->EncSetNextFrameSize(unsigned(iBytes + iCrcBytes));
+                }
+            }
+#endif
             /* Actual encoding */
             bytesEncoded = codec->Encode(vecsEncInData, lNumSampEncIn * iNumChannels, vecsTmpData, lMaxBytesEncOut);
             if (bytesEncoded > 0)
@@ -136,6 +181,47 @@ CAudioSourceEncoderImplementation::ProcessDataInternal(CParameter& Parameters,
                 /* Encoder is in initialization phase, reset CRC and length */
                 aac_crc_bits[j] = 0;
                 veciFrameLength[j] = 0;
+            }
+        }
+
+        /* The frames must fit into the audio payload: the receiver rejects
+           the whole super frame if the frame borders exceed it, the last
+           frame (implicit length) must keep at least one byte, and each
+           frame should be at least iNumHigherProtectedBytes long (the
+           receiver fills the higher protected part of every frame). Frames
+           that do not fit are dropped (zero bytes with a wrong CRC, the
+           decoder conceals them) instead of being truncated. On overflow the
+           encoder bitrate is reduced by 10 % (down to half the initial rate)
+           to give encoders without strict rate control some headroom. */
+        if (bDrmSf)
+        {
+            const int iMinLen = std::min(iNumHigherProtectedBytes, int(lMaxBytesEncOut));
+            int iUsed = 0;
+            bool bDropped = false;
+            for (int j = 0; j < iNumAudioFrames; j++)
+            {
+                const int iRest = iNumAudioFrames - 1 - j; /* frames after j */
+                const int iReserve = iRest * iMinLen + ((iRest > 0 && iMinLen == 0) ? 1 : 0);
+                if (iUsed + veciFrameLength[j] + iReserve > iAudioPayloadLen)
+                {
+                    veciFrameLength[j] = 0;
+                    aac_crc_bits[j] = 0;
+                    bDropped = true;
+                }
+                if (veciFrameLength[j] < iMinLen)
+                {
+                    /* pad (or replace a dropped frame) with zeros */
+                    for (int i = veciFrameLength[j]; i < iMinLen; i++)
+                        audio_frame[j][i] = 0;
+                    veciFrameLength[j] = iMinLen;
+                }
+                iUsed += veciFrameLength[j];
+            }
+            if (bDropped && iEncBitRate > iEncBitRateMin)
+            {
+                iEncBitRate = std::max(iEncBitRateMin, iEncBitRate * 9 / 10);
+                codec->EncSetBitrate(iEncBitRate);
+                std::cerr << "audio super frame overflow, encoder bitrate reduced to " << iEncBitRate << std::endl;
             }
         }
 
@@ -355,9 +441,12 @@ CAudioSourceEncoderImplementation::InitInternalTx(CParameter & Parameters,
             codec->EncOpen(Parameters.Service[iCurSelServ].AudioParam, lNumSampEncIn, lMaxBytesEncOut);
             lNumSampEncIn /= unsigned(iNumChannels);
 
-            /* Calculate bitrate, bit per second */
-            const int iBitRate = iActEncOutBytes * SIZEOF__BYTE * AUD_DEC_TRANSFROM_LENGTH / int(lNumSampEncIn) / iTimeEachAudBloMS * 1000;
+            /* Calculate bitrate, bit per second (one frame each
+               iTimeEachAudBloMS, with or without SBR) */
+            const int iBitRate = iActEncOutBytes * SIZEOF__BYTE * 1000 / iTimeEachAudBloMS;
             codec->EncSetBitrate(iBitRate);
+            iEncBitRate = iBitRate;
+            iEncBitRateMin = iBitRate / 2;
         }
             break;
 
@@ -407,9 +496,10 @@ CAudioSourceEncoderImplementation::InitInternalTx(CParameter & Parameters,
             iNumHeaderBytes = 0;
         }
 
-        /* Set parameter in global struct */
-        Parameters.Service[iCurSelServ].AudioParam.eAudioMode =
-                iNumChannels >= 2 ? CAudioParam::AM_STEREO : CAudioParam::AM_MONO;
+        /* Set parameter in global struct (keeps parametric stereo, sets the
+           SBR flag according to the encoder) */
+        SetEncodedAudioMode(Parameters.Service[iCurSelServ].AudioParam,
+                            iNumChannels, lNumSampEncIn);
 
         /* Init storage for actual data, CRCs and frame lengths */
         audio_frame.Init(iNumAudioFrames, lMaxBytesEncOut);
@@ -540,9 +630,12 @@ CAudioSourceEncoderImplementation::InitInternalRx(CParameter& Parameters,
 
         lNumSampEncIn /= iNumChannels;
 
-        /* Calculate bitrate, bit per second */
-        const int iBitRate = iActEncOutBytes * SIZEOF__BYTE * AUD_DEC_TRANSFROM_LENGTH / lNumSampEncIn / iTimeEachAudBloMS * 1000;
+        /* Calculate bitrate, bit per second (one frame each
+           iTimeEachAudBloMS, with or without SBR) */
+        const int iBitRate = iActEncOutBytes * SIZEOF__BYTE * 1000 / iTimeEachAudBloMS;
         codec->EncSetBitrate(iBitRate);
+        iEncBitRate = iBitRate;
+        iEncBitRateMin = iBitRate / 2;
     }
         break;
     case CAudioParam::AC_MPEGAAC:
@@ -621,9 +714,9 @@ CAudioSourceEncoderImplementation::InitInternalRx(CParameter& Parameters,
         iNumBorders = 0;
     }
 
-    /* Set parameter in global struct */
-    Parameters.Service[0].AudioParam.eAudioMode =
-            iNumChannels == 2 ? CAudioParam::AM_STEREO : CAudioParam::AM_MONO;
+    /* Set parameter in global struct (keeps parametric stereo, sets the
+       SBR flag according to the encoder) */
+    SetEncodedAudioMode(Parameters.Service[0].AudioParam, iNumChannels, lNumSampEncIn);
 
     /* Init storage for actual data, CRCs and frame lengths */
     audio_frame.Init(iNumAudioFrames, lMaxBytesEncOut);
