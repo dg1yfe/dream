@@ -476,6 +476,30 @@ CAudioSourceEncoderImplementation::InitInternalTx(CParameter & Parameters,
             /* Requested tools the encoder does not have fall back explicitly
                (SetEncodedAudioMode() signals what is really transmitted) */
             CAudioParam& AudioParam = Parameters.Service[iCurSelServ].AudioParam;
+
+            /* Channel mode: "auto" = parametric stereo at low payload rates
+               if the encoder can do it, else stereo; an explicit stereo
+               below that rate only gets a recommendation */
+            const int iPayloadRate = iAudioPayloadLen * SIZEOF__BYTE * 1000 / 400;
+            const bool bCanPS = codec->CanEncodePS(eAudioCoding);
+            if (AudioParam.bAutoStereo)
+            {
+                AudioParam.eAudioMode = EffectiveAudioMode(AudioParam, iPayloadRate, bCanPS);
+                std::cerr << "audio mode auto: "
+                          << (AudioParam.eAudioMode == CAudioParam::AM_P_STEREO ? "parametric stereo" : "stereo")
+                          << " (audio payload " << iPayloadRate / 100 / 10.0 << " kbit/s, "
+                          << "parametric stereo below " << PS_RECOMMENDED_BELOW_BITRATE / 1000 << " kbit/s"
+                          << (bCanPS ? "" : ", not supported by the encoder") << ")" << std::endl;
+            }
+            else if (AudioParam.eAudioMode == CAudioParam::AM_STEREO && bCanPS
+                     && iPayloadRate < PS_RECOMMENDED_BELOW_BITRATE)
+            {
+                std::cerr << "stereo below " << PS_RECOMMENDED_BELOW_BITRATE / 1000
+                          << " kbit/s (audio payload " << iPayloadRate / 100 / 10.0
+                          << " kbit/s): parametric stereo recommended (--aacmode pstereo or auto)" << std::endl;
+            }
+            iNumChannels = (AudioParam.eAudioMode == CAudioParam::AM_MONO) ? 1 : 2;
+
             if (AudioParam.eSBRFlag == CAudioParam::SB_USED && !codec->CanEncodeSBR(eAudioCoding))
             {
                 std::cerr << "warning: AAC encoder \"" << codec->EncGetVersion()
@@ -915,6 +939,31 @@ CAudioSourceEncoderImplementation::UpdateRateControl(int iRequestedBytes, bool b
         iEncBitRate = iNewBitRate;
         codec->EncSetBitrate(iEncBitRate);
     }
+}
+
+int
+CAudioSourceEncoderImplementation::AACPayloadRate(int iNumDecodedBitsMSC,
+                                                  CAudioParam::EAudSamRat eSamplRate,
+                                                  bool bTextMessage)
+{
+    /* same arithmetic as InitInternalTx() */
+    const int iNumFrames = (eSamplRate == CAudioParam::AS_12KHZ) ? 5 : 10;
+    const int iNumHeaderBytes = ((iNumFrames - 1) * 12 + 7) / 8;
+    int iBytes = iNumDecodedBitsMSC / SIZEOF__BYTE;
+    if (bTextMessage)
+        iBytes -= NUM_BYTES_TEXT_MESS_IN_AUD_STR;
+    const int iPayload = iBytes - iNumHeaderBytes - iNumFrames /* CRCs */;
+    return std::max(0, iPayload) * SIZEOF__BYTE * 1000 / 400; /* 400 ms super frame */
+}
+
+CAudioParam::EAudioMode
+CAudioSourceEncoderImplementation::EffectiveAudioMode(const CAudioParam& AudioParam,
+                                                      int iPayloadRate, bool bCanPS)
+{
+    if (!AudioParam.bAutoStereo)
+        return AudioParam.eAudioMode;
+    return (bCanPS && iPayloadRate < PS_RECOMMENDED_BELOW_BITRATE)
+            ? CAudioParam::AM_P_STEREO : CAudioParam::AM_STEREO;
 }
 
 void

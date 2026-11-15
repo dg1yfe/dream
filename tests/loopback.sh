@@ -123,6 +123,8 @@ xaac-aac-sbr-stereo | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode stereo --sb
 xaac-aac-sbr-ps    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode pstereo --sbr 1     | stereo
 xaac-sbr-12k       | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono --sbr 1 --aacrate 12000 | mono
 xaac-sbr-ps-12k    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode pstereo --sbr 1 --aacrate 12000 | stereo
+fdk-sbr-auto       |                       | --codec AAC --aacmode auto --sbr 1 --aacrate 12000 | stereo
+xaac-sbr-auto      | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode auto --sbr 1 --aacrate 12000 | stereo
 faac-aac-lc-mono   | DREAM_NO_FDK_ENCODER=1 DREAM_NO_XAAC=1 | --codec AAC --aacmode mono   | mono
 faac-aac-lc-stereo | DREAM_NO_FDK_ENCODER=1 DREAM_NO_XAAC=1 | --codec AAC --aacmode stereo | stereo
 opus-mono          |                       | --codec Opus --opuschannels OC_MONO       | mono
@@ -179,6 +181,14 @@ for src in $SOURCES; do
                        prov="libxaac DRM encoder NOT used (tx.log)" ;;
             faac-*) grep -q "Got FAAC library" "$dir/tx.log" ||
                        prov="libfaac_drm NOT loaded (tx.log)" ;;
+        esac
+        # "auto" at the default channel (20.4 kbit/s audio payload) must
+        # choose parametric stereo, and the receiver must see it in the SDC
+        case "$name" in
+            *-auto) if [ -z "$prov" ] && ! { grep -q "audio mode auto: parametric stereo" "$dir/tx.log" &&
+                        { ! grep -q "^DecOpen" "$dir/rx.log" || grep -q "^DecOpen .*+PS" "$dir/rx.log"; }; }; then
+                        prov="auto did not select parametric stereo (tx.log/rx.log)"
+                    fi ;;
         esac
         if [ -n "$prov" ]; then
             res="FAIL *** $prov *** (audio check: ${res%%,*})"

@@ -638,7 +638,7 @@ CSettings::ParseArguments(int argc, char **argv)
 			static const char* const TxService = "Transmitter Service 1";
 			static const struct { const char* opt; const char* section; const char* key; } TxOpts[] = {
 				{ "--codec",         TxService,     "codec" },          /* AAC | Opus */
-				{ "--aacmode",       TxService,     "aac_mode" },       /* mono | pstereo | stereo */
+				{ "--aacmode",       TxService,     "aac_mode" },       /* auto | mono | pstereo | stereo */
 				{ "--aacrate",       TxService,     "aac_samplerate" }, /* 12000 | 24000 */
 				{ "--sbr",           TxService,     "sbr" },            /* 0 | 1 */
 				{ "--opuschannels",  TxService,     "Opus_Channels" },  /* OC_MONO | OC_STEREO */
@@ -657,6 +657,10 @@ CSettings::ParseArguments(int argc, char **argv)
 				if (GetStringArgument(argc, argv, i, TxOpts[k].opt, TxOpts[k].opt, strArgument))
 				{
 					Put(TxOpts[k].section, TxOpts[k].key, strArgument);
+					/* an explicit --aacmode is never a legacy value (see
+					   CDRMTransmitter::LoadSettings) */
+					if (string(TxOpts[k].key) == "aac_mode")
+						Put(TxOpts[k].section, "aac_mode_format", 2);
 					bFound = true;
 					break;
 				}
@@ -766,7 +770,8 @@ CSettings::UsageArguments()
 		"Transmitter options (-t), stored in the ini file like the GUI settings:\n"
 		"  -f <s>                       read the audio input from file <s> (repeated until --duration)\n"
 		"  --codec <s>                  AAC | Opus\n"
-		"  --aacmode <s>                mono | pstereo | stereo\n"
+		"  --aacmode <s>                auto | mono | pstereo | stereo (auto: parametric stereo\n"
+		"                               below 22 kbit/s audio payload if the encoder can, else stereo)\n"
 		"  --aacrate <n>                AAC core sample rate 12000 | 24000\n"
 		"  --sbr <b>                    AAC SBR (0: off; 1: on)\n"
 		"  --opuschannels <s>           OC_MONO | OC_STEREO\n"

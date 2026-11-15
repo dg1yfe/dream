@@ -43,6 +43,11 @@
 /* Definition */
 #define MAX_ENCODED_CHANNELS 2
 
+/* Stereo services below this audio payload rate (bit/s) sound better with
+   parametric stereo than with stereo (SBR) encoding: "auto" chooses
+   parametric stereo there, an explicit "stereo" gets a recommendation */
+#define PS_RECOMMENDED_BELOW_BITRATE 22000
+
 
 /* Classes ********************************************************************/
 class CAudioSourceEncoderImplementation
@@ -53,6 +58,15 @@ public:
 
 	void SetTextMessage(const std::string& strText);
 	void ClearTextMessage();
+	bool UsingTextMessage() const { return bUsingTextMessage; }
+
+	/* AAC audio payload (bit/s) for the given number of decoded MSC bits,
+	   core sample rate and text message setting */
+	static int AACPayloadRate(int iNumDecodedBitsMSC, CAudioParam::EAudSamRat eSamplRate,
+	                          bool bTextMessage);
+	/* Channel mode in effect for a requested one ("auto": bAutoStereo) */
+	static CAudioParam::EAudioMode EffectiveAudioMode(const CAudioParam& AudioParam,
+	                                                  int iPayloadRate, bool bCanPS);
 
 	void SetPicFileName(const std::string& strFileName, const std::string& strFormat)
 		{DataEncoder.GetSliShowEnc()->AddFileName(strFileName, strFormat);}
@@ -178,6 +192,7 @@ public:
 
 	bool CanEncode(CAudioParam::EAudCod eAudCod)
 			{return AudioSourceEncoderImpl.CanEncode(eAudCod);}
+	bool UsingTextMessage() const {return AudioSourceEncoderImpl.UsingTextMessage();}
 
 protected:
 	CAudioSourceEncoderImplementation AudioSourceEncoderImpl;
