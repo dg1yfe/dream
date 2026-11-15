@@ -69,7 +69,8 @@ static const LIBFUNC LibFuncs[] = {
 # if defined(_WIN32)
 static const char* LibNames[] = { "libopus-0.dll", "libopus.dll", "opus.dll", nullptr };
 # elif defined(__APPLE__)
-static const char* LibNames[] = { "libopus.dylib", nullptr };
+/* search order: see CLibraryLoader::Candidates */
+static const char* LibNames[] = { "libopus.dylib", "libopus.0.dylib", nullptr };
 # else
 static const char* LibNames[] = { "libopus.so.0", "libopus.so", nullptr };
 # endif
@@ -84,6 +85,10 @@ const char *opusGetVersion(
 	void
 	)
 {
+#ifndef USE_OPUS_LIBRARY
+	if (opus_get_version_string == nullptr)
+		return "(no Opus library loaded)";
+#endif
 	return opus_get_version_string();
 }
 
@@ -593,8 +598,8 @@ OpusCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
 CAudioCodec::EDecError
 OpusCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVector<_REAL>& left, CVector<_REAL>& right)
 {
-    EDecError eDecError;
-    int iDecChannels;
+    EDecError eDecError = CAudioCodec::DECODER_ERROR_UNKNOWN; /* if no decoder is open */
+    int iDecChannels = 1;
     bool bCurBlockOK = true;
     /* Prepare data vector with CRC at the beginning (the definition with faad2 DRM interface) */
     CVector<uint8_t> vecbyPrepAudioFrame(int(audio_frame.size()+1));
@@ -614,9 +619,11 @@ OpusCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVec
 	}
 
     //========= TODO
-    int bUseReverbEffect;
-    int bCurBlockFaulty;
-    int iLenDecOutPerChan;
+    /* were uninitialised (garbage loop bound -> out-of-bounds writes); values
+       as DecOpen() used to set it: one 20 ms frame per packet = OPUS_PCM_FRAME_SIZE */
+    bool bUseReverbEffect = false;
+    bool bCurBlockFaulty = false;
+    const int iLenDecOutPerChan = OPUS_PCM_FRAME_SIZE;
     //========= END TODO
 
     if (!(eDecError == CAudioCodec::DECODER_ERROR_CRC && bUseReverbEffect == false) && eDecError != CAudioCodec::DECODER_ERROR_OK)

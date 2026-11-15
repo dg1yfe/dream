@@ -64,6 +64,7 @@ public:
 protected:
 	NeAACDecHandle hFaadDecoder;
 	faacEncHandle hFaacEncoder;
+	unsigned int iEncChannels;
     std::string fileName(const CParameter& Parameters) const;
 };
 

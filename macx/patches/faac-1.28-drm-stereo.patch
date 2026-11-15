@@ -1,0 +1,196 @@
+DREAM macOS port: make faac 1.28 (--enable-drm / -DDRM) produce valid DRM stereo.
+
+Upstream: https://github.com/knik0/faac tag faac1_28 (065f22740d34437fa74805a32008674d0a9b64e7)
+Applies with: git apply faac-1.28-drm-stereo.patch   (run inside the faac 1.28 tree)
+
+1. libfaac/bitstream.c: DRM-specific WriteCPE() writing aac_scalable_main_element()
+   order (common header + ms mask, per-channel tns/ltp flags + side info, both
+   tns_data, CRC over all of it, then both reordered spectral data). Stock 1.28
+   reused the generic CPE writer; faad2 and fdk-aac rejected every stereo frame
+   (faad2 error 26 "LTP decoding not available" / 28 CRC / 32).
+2. libfaac/frame.c: in DRM mode equalise max_sfb of a channel pair BEFORE the
+   bitstream is written (DRM carries one max_sfb for both channels).
+3. libfaac/frame.c: in DRM mode force AAC-LC (default was LTP, which DRM cannot
+   signal).
+Mono output is bit-identical to unpatched 1.28 when the caller sets LOW (DREAM does).
+
+diff --git a/libfaac/bitstream.c b/libfaac/bitstream.c
+index fa83dc5..83ea4de 100644
+--- a/libfaac/bitstream.c
++++ b/libfaac/bitstream.c
+@@ -382,6 +382,113 @@ static int WriteADTSHeader(faacEncHandle hEncoder,
+     return bits;
+ }
+ 
++#ifdef DRM
++/*
++ * DRM stereo (DREAM macOS port patch): write the channel pair in the
++ * aac_scalable_main_element() order of ETSI ES 201 980 (as parsed by faad2's
++ * DRM_aac_scalable_main_element()):
++ *
++ *   ics_reserved_bit, window_sequence, window_shape, max_sfb
++ *   [, scale_factor_grouping], ms_mask_present, ms_used[]   (common to L and R)
++ *   L: tns_data_present, ltp_data_present, global_gain, section_data,
++ *      scale_factor_data, length_of_reordered_spectral_data,
++ *      length_of_longest_codeword
++ *   R: same
++ *   L tns_data(), R tns_data()
++ *   --- aac_crc_bits cover everything above ---
++ *   L reordered_spectral_data(), R reordered_spectral_data()
++ *
++ * The stock faac 1.28 code reused the generic CPE writer, which put the
++ * per-channel flags into the common header, omitted them for R and computed
++ * the CRC per channel, so no DRM decoder could parse its stereo output.
++ */
++static int WriteDRMSideInfo(CoderInfo *coderInfo,
++                            BitStream *bitStream,
++                            int writeFlag)
++{
++    int bits = 0;
++
++    if (writeFlag) {
++        PutBit(bitStream, coderInfo->tnsInfo.tnsDataPresent, LEN_TNS_PRES);
++        PutBit(bitStream, 0, LEN_PRED_PRES); /* ltp_data_present */
++        PutBit(bitStream, coderInfo->global_gain, LEN_GLOB_GAIN);
++    }
++    bits += LEN_TNS_PRES + LEN_PRED_PRES + LEN_GLOB_GAIN;
++
++    bits += SortBookNumbers(coderInfo, bitStream, writeFlag);
++    bits += WriteScalefactors(coderInfo, bitStream, writeFlag);
++
++    if (writeFlag) {
++        PutBit(bitStream, coderInfo->iLenReordSpData, LEN_HCR_REORDSD);
++        PutBit(bitStream, coderInfo->iLenLongestCW, LEN_HCR_LONGCW);
++    }
++    bits += LEN_HCR_REORDSD + LEN_HCR_LONGCW;
++
++    return bits;
++}
++
++static int WriteCPE(CoderInfo *coderInfoL,
++                    CoderInfo *coderInfoR,
++                    ChannelInfo *channelInfo,
++                    BitStream* bitStream,
++                    int objectType,
++                    int writeFlag)
++{
++    int bits = 0;
++    int numWindows = coderInfoL->num_window_groups;
++    int maxSfb = coderInfoL->max_sfb;
++    int msPresent = channelInfo->msInfo.is_present ? 1 : 0;
++
++    (void)objectType;
++
++    /* common header (both channels share block type, window shape, max_sfb) */
++    if (writeFlag) {
++        PutBit(bitStream, 0, LEN_ICS_RESERV);
++        PutBit(bitStream, coderInfoL->block_type, LEN_WIN_SEQ);
++        PutBit(bitStream, coderInfoL->window_shape, LEN_WIN_SH);
++    }
++    bits += LEN_ICS_RESERV + LEN_WIN_SEQ + LEN_WIN_SH;
++
++    if (coderInfoL->block_type == ONLY_SHORT_WINDOW) {
++        if (writeFlag) {
++            PutBit(bitStream, maxSfb, LEN_MAX_SFBS);
++            PutBit(bitStream, FindGroupingBits(coderInfoL), MAX_SHORT_WINDOWS - 1);
++        }
++        bits += LEN_MAX_SFBS + MAX_SHORT_WINDOWS - 1;
++    } else {
++        if (writeFlag)
++            PutBit(bitStream, maxSfb, LEN_MAX_SFBL);
++        bits += LEN_MAX_SFBL;
++    }
++
++    if (writeFlag) {
++        PutBit(bitStream, msPresent, LEN_MASK_PRES);
++        if (msPresent) {
++            int g, b;
++            for (g = 0; g < numWindows; g++)
++                for (b = 0; b < maxSfb; b++)
++                    PutBit(bitStream, channelInfo->msInfo.ms_used[g*maxSfb+b], LEN_MASK);
++        }
++    }
++    bits += LEN_MASK_PRES;
++    if (msPresent)
++        bits += numWindows * maxSfb * LEN_MASK;
++
++    bits += WriteDRMSideInfo(coderInfoL, bitStream, writeFlag);
++    bits += WriteDRMSideInfo(coderInfoR, bitStream, writeFlag);
++    bits += WriteTNSData(coderInfoL, bitStream, writeFlag);
++    bits += WriteTNSData(coderInfoR, bitStream, writeFlag);
++
++    /* DRM CRC over everything written so far (element starts right after the CRC byte) */
++    if (writeFlag)
++        calc_CRC(bitStream, bits);
++
++    bits += WriteReorderedSpectralData(coderInfoL, bitStream, writeFlag);
++    bits += WriteReorderedSpectralData(coderInfoR, bitStream, writeFlag);
++
++    return bits;
++}
++#else /* !DRM */
+ static int WriteCPE(CoderInfo *coderInfoL,
+                     CoderInfo *coderInfoR,
+                     ChannelInfo *channelInfo,
+@@ -439,6 +546,7 @@ static int WriteCPE(CoderInfo *coderInfoL,
+ 
+     return bits;
+ }
++#endif /* DRM */
+ 
+ static int WriteSCE(CoderInfo *coderInfo,
+                     ChannelInfo *channelInfo,
+diff --git a/libfaac/frame.c b/libfaac/frame.c
+index 0c4140f..d58686f 100644
+--- a/libfaac/frame.c
++++ b/libfaac/frame.c
+@@ -154,6 +154,12 @@ int FAACAPI faacEncSetConfiguration(faacEncHandle hEncoder,
+             break;
+     }
+ 
++#ifdef DRM
++    /* DRM (ETSI ES 201 980) only allows AAC-LC: MAIN prediction / LTP data
++       cannot be signalled in a DRM stream (DREAM macOS port patch) */
++    hEncoder->config.aacObjectType = LOW;
++#endif
++
+     /* No SSR supported for now */
+     if (hEncoder->config.aacObjectType == SSR)
+         return 0;
+@@ -322,7 +328,11 @@ faacEncHandle FAACAPI faacEncOpen(unsigned long sampleRate,
+     hEncoder->config.name = libfaacName;
+     hEncoder->config.copyright = libCopyright;
+     hEncoder->config.mpegVersion = MPEG4;
++#ifdef DRM
++    hEncoder->config.aacObjectType = LOW; /* DRM: AAC-LC only */
++#else
+     hEncoder->config.aacObjectType = LTP;
++#endif
+     hEncoder->config.allowMidside = 1;
+     hEncoder->config.useLfe = 1;
+     hEncoder->config.useTns = 0;
+@@ -776,6 +786,24 @@ int FAACAPI faacEncEncode(faacEncHandle hEncoder,
+     }
+ 
+ #ifdef DRM
++    /* DRM stereo has a single header carrying max_sfb for both channels, so
++       the CPE max_sfb fix-up below must happen before writing, not after
++       (DREAM macOS port patch). Bands added to the narrower channel were
++       quantised to zero by AACQuantize() in this iteration. */
++    for (channel = 0; channel < numChannels; channel++)
++    {
++        if (channelInfo[channel].present
++                && (channelInfo[channel].cpe)
++                && (channelInfo[channel].ch_is_left))
++        {
++            CoderInfo *cil = &coderInfo[channel];
++            CoderInfo *cir = &coderInfo[channelInfo[channel].paired_ch];
++
++            cil->max_sfb = cir->max_sfb = max(cil->max_sfb, cir->max_sfb);
++            cil->nr_of_sfb = cir->nr_of_sfb = cil->max_sfb;
++        }
++    }
++
+     /* Write the AAC bitstream */
+     bitStream = OpenBitStream(bufferSize, outputBuffer);
+     WriteBitstream(hEncoder, coderInfo, channelInfo, bitStream, numChannels);

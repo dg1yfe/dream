@@ -30,6 +30,17 @@
 #if !defined(USE_FAAD2_LIBRARY) || !defined(USE_FAAC_LIBRARY)
 # include "../util/LibraryLoader.h"
 #endif
+#if !defined(_WIN32) && (!defined(USE_FAAD2_LIBRARY) || !defined(USE_FAAC_LIBRARY))
+# include <dlfcn.h>
+/* file name of the shared library that contains the function at addr */
+static const char* LibPathOf(void* addr)
+{
+    Dl_info info;
+    if (addr != nullptr && dladdr(addr, &info) && info.dli_fname != nullptr)
+        return info.dli_fname;
+    return "?";
+}
+#endif
 
 
 #ifndef USE_FAAD2_LIBRARY
@@ -48,7 +59,9 @@ static const LIBFUNC FaadLibFuncs[] = {
 # if defined(_WIN32)
 static const char* FaadLibNames[] = { "faad2_drm.dll", "libfaad2_drm.dll", "faad_drm.dll", "libfaad2.dll", nullptr };
 # elif defined(__APPLE__)
-static const char* FaadLibNames[] = { "libfaad_drm.dylib", nullptr };
+/* searched in app bundle, @loader_path, @rpath, $DREAM_LIB_PATH, /opt/homebrew/lib,
+   /usr/local/lib, then dyld default (see CLibraryLoader::Candidates) */
+static const char* FaadLibNames[] = { "libfaad_drm.dylib", "libfaad_drm.2.dylib", nullptr };
 # else
 static const char* FaadLibNames[] = { "libfaad_drm.so.2", "libfaad_drm.so", nullptr };
 # endif
@@ -75,7 +88,9 @@ static const LIBFUNC FaacLibFuncs[] = {
 # if defined(_WIN32)
 static const char* FaacLibNames[] = { "faac_drm.dll", "libfaac_drm.dll", "libfaac.dll", "faac.dll", nullptr };
 # elif defined(__APPLE__)
-static const char* FaacLibNames[] = { "libfaac_drm.dylib", nullptr };
+/* DRM-capable faac (faac 1.28 + DRM, see macx/build-faac-drm.sh); same search
+   order as FaadLibNames. A stock faac fails FaacCheckCallback and is skipped. */
+static const char* FaacLibNames[] = { "libfaac_drm.dylib", "libfaac_drm.0.dylib", nullptr };
 # else
 static const char* FaacLibNames[] = { "libfaac_drm.so.0", "libfaac.so.0", nullptr };
 # endif
@@ -100,7 +115,7 @@ static bool FaacCheckCallback()
 /* Implementation *************************************************************/
 
 AacCodec::AacCodec() :
-    hFaadDecoder(nullptr), hFaacEncoder(nullptr)
+    hFaadDecoder(nullptr), hFaacEncoder(nullptr), iEncChannels(1)
 {
 #ifndef USE_FAAD2_LIBRARY
     if (hFaadLib == nullptr)
@@ -109,7 +124,11 @@ AacCodec::AacCodec() :
         if (!hFaadLib)
             cerr << "No usable FAAD2 aac decoder library found" << endl;
         else
+# ifdef _WIN32
             cerr << "Got FAAD2 library" << endl;
+# else
+            cerr << "Got FAAD2 library " << LibPathOf((void*)NeAACDecOpen) << endl;
+# endif
     }
 #endif
 #ifndef USE_FAAC_LIBRARY
@@ -119,7 +138,11 @@ AacCodec::AacCodec() :
         if (!hFaacLib)
             cerr << "No usable FAAC aac encoder library found" << endl;
         else
+# ifdef _WIN32
             cerr << "Got FAAC library" << endl;
+# else
+            cerr << "Got FAAC library " << LibPathOf((void*)faacEncOpen) << endl;
+# endif
     }
 #endif
 }
@@ -152,6 +175,13 @@ bool
 AacCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
 {
     int iAACSampleRate = 12000;
+#ifndef USE_FAAD2_LIBRARY
+    if (hFaadLib == nullptr)
+    {
+        iAudioSampleRate = iAACSampleRate;
+        return false;
+    }
+#endif
     if (hFaadDecoder == nullptr)
         hFaadDecoder = NeAACDecOpen();
     if (hFaadDecoder != nullptr)
@@ -212,7 +242,7 @@ AacCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
 CAudioCodec::EDecError
 AacCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVector<_REAL>& left, CVector<_REAL>& right)
 {
-    EDecError eDecError;
+    EDecError eDecError = CAudioCodec::DECODER_ERROR_OK;
     bool bCurBlockOK = true;
     _SAMPLE* psDecOutSampleBuf = nullptr;
     NeAACDecFrameInfo DecFrameInfo;
@@ -292,8 +322,12 @@ AacCodec::EncGetVersion()
     char nul = 0;
     char *faac_id_string = &nul;
     char *faac_copyright_string = &nul;
+#ifndef USE_FAAC_LIBRARY
+    if (hFaacLib == nullptr || faacEncGetVersion == nullptr)
+        return string("FAAC version: (no DRM-capable faac library loaded)");
+#endif
     faacEncGetVersion(&faac_id_string, &faac_copyright_string);
-    return string("FAAC version: ") + faac_id_string;
+    return string("FAAC version: ") + (faac_id_string ? faac_id_string : "?");
 }
 
 bool
@@ -311,6 +345,12 @@ AacCodec::EncOpen(const CAudioParam& AudioParam, unsigned long& lNumSampEncIn, u
 {
     unsigned long iSampleRate = (AudioParam.eAudioSamplRate==CAudioParam::AS_12KHZ)?12000:24000;
     unsigned int iChannels=(AudioParam.eAudioMode==CAudioParam::AM_MONO)?1:2;
+#ifndef USE_FAAC_LIBRARY
+    if (hFaacLib == nullptr)
+        return false;
+#endif
+    EncClose();
+    iEncChannels = iChannels;
     hFaacEncoder = faacEncOpen(iSampleRate, iChannels, &lNumSampEncIn, &lMaxBytesEncOut);
     return hFaacEncoder != nullptr;
 }
@@ -349,7 +389,9 @@ AacCodec::EncSetBitrate(int iBitRate)
         CurEncFormat->aacObjectType = LOW;
         CurEncFormat->mpegVersion = MPEG4;
         CurEncFormat->outputFormat = 0;	/* (0 = Raw; 1 = ADTS -> Raw) */
-        CurEncFormat->bitRate = iBitRate;
+        /* faac's bitRate is per channel (DRM rate loop targets
+           numChannels * bitRate), iBitRate is the total for the service */
+        CurEncFormat->bitRate = (unsigned long)(iBitRate / int(iEncChannels ? iEncChannels : 1));
         CurEncFormat->bandWidth = 0;	/* Let the encoder choose the bandwidth */
         faacEncSetConfiguration(hFaacEncoder, CurEncFormat);
     }

@@ -1,0 +1,78 @@
+DREAM macOS port: fix VCB11 virtual codebook selection in faac 1.28 DRM mode.
+
+Upstream: https://github.com/knik0/faac tag faac1_28 (065f22740d34437fa74805a32008674d0a9b64e7)
+Applies with: git apply faac-1.28-drm-vcb11.patch   (run inside the faac 1.28 tree)
+
+DRM uses the ER "virtual codebooks for codebook 11" (VCB11, codebooks 16..31),
+each with a largest absolute value (LAV) of 15, 31, 47, ..., 2047. faac 1.28
+chose the codebook by comparing the escape *bit pattern* against those limits,
+so e.g. a section whose largest value is 16..31 was signalled as codebook 16
+(LAV 15). faad2 does not check LAV and decodes it; fdk-aac's HCR decoder
+detects the violation and silences the spectral lines (no error reported),
+which showed up as heavy drop-outs at 12 kHz / >= 15 kbit/s per channel.
+Now the largest absolute quantised value of the section is compared.
+The bitstream size is unchanged (VCB11 books share codebook 11's tables).
+
+diff --git a/libfaac/huffman.c b/libfaac/huffman.c
+index 585fd73..b74ee2c 100644
+--- a/libfaac/huffman.c
++++ b/libfaac/huffman.c
+@@ -783,8 +783,9 @@ int OutputBits(CoderInfo *coderInfo,
+                 num_data[coderInfo->cur_cw]++;
+                 cur_cw_len += len_esc;
+ 
+-                if (esc_sequence > max_esc_sequ)
+-                    max_esc_sequ = esc_sequence;
++                /* VCB11 limits are on the absolute value, not on the escape bit pattern */
++                if (ABS(quant[i]) > max_esc_sequ)
++                    max_esc_sequ = ABS(quant[i]);
+ #endif
+ 
+                 /* then code and transmit the second escape_sequence */
+@@ -796,8 +797,8 @@ int OutputBits(CoderInfo *coderInfo,
+                 num_data[coderInfo->cur_cw]++;
+                 cur_cw_len += len_esc;
+ 
+-                if (esc_sequence > max_esc_sequ)
+-                    max_esc_sequ = esc_sequence;
++                if (ABS(quant[i+1]) > max_esc_sequ)
++                    max_esc_sequ = ABS(quant[i+1]);
+ #endif
+             }
+             else if (ABS(quant[i]) >= 16) {  /* the first codeword was above 16, not the second one */
+@@ -810,8 +811,8 @@ int OutputBits(CoderInfo *coderInfo,
+                 num_data[coderInfo->cur_cw]++;
+                 cur_cw_len += len_esc;
+ 
+-                if (esc_sequence > max_esc_sequ)
+-                    max_esc_sequ = esc_sequence;
++                if (ABS(quant[i]) > max_esc_sequ)
++                    max_esc_sequ = ABS(quant[i]);
+ #endif
+             }
+             else if (ABS(quant[i+1]) >= 16) { /* the second codeword was above 16, not the first one */
+@@ -824,8 +825,8 @@ int OutputBits(CoderInfo *coderInfo,
+                 num_data[coderInfo->cur_cw]++;
+                 cur_cw_len += len_esc;
+ 
+-                if (esc_sequence > max_esc_sequ)
+-                    max_esc_sequ = esc_sequence;
++                if (ABS(quant[i+1]) > max_esc_sequ)
++                    max_esc_sequ = ABS(quant[i+1]);
+ #endif
+             }
+ #ifdef DRM
+@@ -839,8 +840,11 @@ int OutputBits(CoderInfo *coderInfo,
+         coderInfo->spectral_count = counter;  /* send the current count back to the outside world */
+ 
+ #ifdef DRM
+-        /* VCB11: check which codebook should be used using max escape sequence */
+-        /* 8.5.3.1.3, table 157 */
++        /* VCB11: choose the virtual codebook from the largest absolute value in
++           this section (8.5.3.1.3, table 157 "largest absolute value": 15, 31,
++           ..., 2047). faac 1.28 compared the escape bit pattern instead, which
++           e.g. gave codebook 16 (LAV 15) for values 16..31; fdk-aac then
++           discards those lines (DREAM macOS port patch). */
+         if (max_esc_sequ <= 15)
+             *book = 16;
+         else if (max_esc_sequ <= 31)

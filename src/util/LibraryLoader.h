@@ -40,6 +40,12 @@
 # define GETPROC(a, b) dlsym(a, b)
 # define FREELIB(a) dlclose(a)
 #endif
+#ifdef __APPLE__
+# include <cstdlib>
+# include <cstring>
+# include <string>
+# include <vector>
+#endif
 
 typedef struct LIBFUNC
 {
@@ -51,12 +57,22 @@ typedef struct LIBFUNC
 class CLibraryLoader
 {
 public:
+	/* Try every candidate (see Candidates()) until one exports all LibFuncs and
+	   passes LibCheckCallback. The function pointers are left pointing into the
+	   accepted library, or reset to their dummy values if none is found. */
 	static void* Load(const char** LibraryNames, const LIBFUNC* LibFuncs, bool (*LibCheckCallback)()=nullptr)
 	{
 		void* hLib = nullptr;
+#ifdef __APPLE__
+		const std::vector<std::string> names = Candidates(LibraryNames);
+		for (size_t l = 0; l < names.size(); l++)
+		{
+			hLib = LOADLIB(names[l].c_str());
+#else
 		for (int l = 0; LibraryNames[l]; l++)
 		{
 			hLib = LOADLIB(LibraryNames[l]);
+#endif
 			if (hLib != nullptr)
 			{
 				int f;
@@ -83,6 +99,54 @@ public:
 		}
 		return hLib;
 	}
+#ifdef __APPLE__
+	/* dlopen() of a bare leaf name only searches DYLD_LIBRARY_PATH, LC_RPATH,
+	   the current directory and DYLD_FALLBACK_LIBRARY_PATH (/usr/local/lib,
+	   /usr/lib) - never Homebrew's /opt/homebrew/lib or the app bundle. So for
+	   every leaf name try, in order:
+	     1. <app>.app/Contents/Frameworks   (@executable_path/../Frameworks)
+	     2. @loader_path                    (directory of the dream binary)
+	     3. @rpath                          (LC_RPATH entries, e.g. .deps/<arch>/lib in dev builds)
+	     4. each directory in $DREAM_LIB_PATH (colon separated)
+	     5. /opt/homebrew/lib               (Homebrew, Apple Silicon)
+	     6. /usr/local/lib                  (Homebrew Intel / manual installs)
+	     7. the bare name                   (dyld default search)
+	   A candidate that loads but fails the symbol/check callback is skipped,
+	   so e.g. a non-DRM libfaac in an earlier location does not hide a good one. */
+	static std::vector<std::string> Candidates(const char** LibraryNames)
+	{
+		std::vector<std::string> dirs;
+		dirs.push_back("@executable_path/../Frameworks");
+		dirs.push_back("@loader_path");
+		dirs.push_back("@rpath");
+		const char* env = getenv("DREAM_LIB_PATH");
+		if (env != nullptr)
+		{
+			std::string s(env);
+			size_t start = 0;
+			while (start <= s.size())
+			{
+				size_t end = s.find(':', start);
+				if (end == std::string::npos)
+					end = s.size();
+				if (end > start)
+					dirs.push_back(s.substr(start, end - start));
+				start = end + 1;
+			}
+		}
+		dirs.push_back("/opt/homebrew/lib");
+		dirs.push_back("/usr/local/lib");
+
+		std::vector<std::string> names;
+		for (size_t d = 0; d < dirs.size(); d++)
+			for (int l = 0; LibraryNames[l]; l++)
+				if (strchr(LibraryNames[l], '/') == nullptr)
+					names.push_back(dirs[d] + "/" + LibraryNames[l]);
+		for (int l = 0; LibraryNames[l]; l++)
+			names.push_back(LibraryNames[l]);
+		return names;
+	}
+#endif
 	static void Free(void** hLib, const LIBFUNC* LibFuncs)
 	{
 		for (int f = 0; LibFuncs[f].pcFunctionName; f++)
