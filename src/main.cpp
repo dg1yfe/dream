@@ -57,6 +57,12 @@ int main(int argc, char **argv) {
 
       DRMSimulation.SimScript();
       DRMReceiver.LoadSettings();
+      if (!DRMReceiver.InputDeviceOK()) {
+        /* e.g. missing -f file: the receive loop would never get data and
+           --duration would never be reached (busy loop at 100 % CPU) */
+        cerr << "dream: no usable input, exiting" << endl;
+        return 1;
+      }
 
 #ifdef _WIN32
       WSADATA wsaData;

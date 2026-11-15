@@ -203,8 +203,12 @@ CDRMReceiver::SetInputDevice(string s)
     case FileTyper::file_framing:
     case FileTyper::raw_af:
     case FileTyper::raw_pft:
-        pUpstreamRSCI->SetOrigin(device);
+        bInputDeviceOK = pUpstreamRSCI->SetOrigin(device);
+        if (!bInputDeviceOK)
+            cerr << "cannot open input \"" << device << "\": not a readable sound file, RSCI file or network address" << endl;
+        return;
     }
+    bInputDeviceOK = true;
 }
 
 void

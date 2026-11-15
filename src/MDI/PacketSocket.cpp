@@ -303,6 +303,13 @@ CPacketSocketNative::SetOrigin(const string & strNewAddr)
     if (p>=0 && parts[p].length() > 0)
         port = atol(parts[p].c_str());
 
+    /* the port must be a number 1..65535: anything else (e.g. the name of a
+       missing input file) is not a network origin */
+    if (!ok || p < 0 || parts[p].empty()
+        || parts[p].find_first_not_of("0123456789") != string::npos
+        || port < 1 || port > 65535)
+        return false;
+
     if (o>=0 && parts[o].length() > 0)
     {
         inet_pton(AF_INET, parts[o].c_str(), &sourceAddr.sin_addr);

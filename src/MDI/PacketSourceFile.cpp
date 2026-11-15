@@ -120,13 +120,20 @@ CPacketSourceFile::SetOrigin(const string& origin)
         pF = fopen(str.c_str(), "rb");
         if ( pF != nullptr)
         {
-            char c;
+            char c = 0;
             size_t n = fread(&c, sizeof(c), 1, (FILE *) pF);
-            (void)n;
             fseek ( (FILE *) pF , 0 , SEEK_SET );
             if(c=='A') eFileType = af;
-            if(c=='P') eFileType = pf;
-            if(c=='f') eFileType = ff;
+            else if(c=='P') eFileType = pf;
+            else if(c=='f') eFileType = ff;
+            else n = 0;
+            if (n != 1)
+            {
+                /* empty or not an AF/PF/file-framing file: a FILE* left with
+                   eFileType == pcap would later be used as a pcap handle */
+                fclose((FILE *) pF);
+                pF = nullptr;
+            }
         }
     }
     return pF != nullptr;

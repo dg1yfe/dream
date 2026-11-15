@@ -147,6 +147,9 @@ public:
     virtual void SaveSettings() override;
 
     virtual void SetInputDevice(std::string) override;
+    /* false if the last SetInputDevice() named neither a readable sound file nor
+       an RSCI file/network source (e.g. a missing -f file) */
+    bool InputDeviceOK() const { return bInputDeviceOK; }
     virtual void SetOutputDevice(std::string) override;
 
     virtual bool IsReceiver() const override { return true; }
@@ -461,6 +464,7 @@ protected:
     CPlotManager PlotManager;
     std::string rsiOrigin;
     int iPrevSigSampleRate; /* sample rate before sound file */
+    bool bInputDeviceOK = true;
 };
 
 #endif // !defined(DRMRECEIVER_H__3B0BA660_CA63_4344_BB2B_23E7A0D31912__INCLUDED_)

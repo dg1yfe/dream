@@ -234,7 +234,11 @@ int opusEncEncode(opus_encoder *enc,
 	int frames_per_packet = 1;//enc->frames_per_packet;
 	int samples_per_channel = samplesInput / channels / frames_per_packet;
 //	int max_data = (bufferSize-frame_extra_bytes) / frames_per_packet;
-	int max_data = enc->bytes_per_frame - frame_extra_bytes;
+	/* bytes_per_frame (EncSetBitrate) already excludes the CRC byte, which
+	   AudioSourceEncoder adds per frame; don't subtract it a second time */
+	int max_data = enc->bytes_per_frame;
+	if (max_data > OPUS_MAX_DATA_FRAME)
+		max_data = OPUS_MAX_DATA_FRAME;
 //	EPRINTF("opusEncEncode: samplesInput=%i samples_per_channel=%i\n", (int)samplesInput, samples_per_channel);
 	for (i=0, frame_bytes=0, pcm_pos=0; i<frames_per_packet; i++, pcm_pos+=samples_per_channel*channels)
 	{
@@ -447,9 +451,46 @@ int opusDecInit(
 	dec->samplerate = samplerate;
 	dec->channels = channels;
 	dec->changed = 0;
+	dec->pending_len = 0;
+	dec->pending_ok = 0;
+	dec->lost_run = 0;
 	return 0;
 }
 
+/* Length and CRC check of one DRM Opus frame [crc][packet]. Wire format: the
+   CRC covers the packet except its last CRC_BYTES bytes (same on TX). */
+static int opusFrameOk(opus_decoder *dec, const unsigned char *buffer, unsigned long buffer_size)
+{
+	const int frame_bytes = int(buffer_size) - CRC_BYTES;
+	if (frame_bytes < 1 || frame_bytes > OPUS_MAX_DATA_FRAME)
+		return 0;
+#if CRC_BYTES != 0
+	dec->CRCObject->Reset(8*CRC_BYTES);
+	for (int i=CRC_BYTES; i<frame_bytes; i++)
+		dec->CRCObject->AddByte(buffer[i]);
+	int crc = dec->CRCObject->GetCRC();
+# if CRC_BYTES == 1
+	return crc == buffer[0];
+# elif CRC_BYTES == 2
+	return crc == ((buffer[0]<<8)|buffer[1]);
+# else
+#  error wrong CRC_BYTES
+# endif
+#else
+	return 1;
+#endif
+}
+
+/* Decodes the PREVIOUS frame (20 ms, OPUS_PCM_FRAME_SIZE samples per channel)
+   and keeps 'buffer' as the next pending frame:
+   - good frame: normal decode;
+   - lost frame (CRC/length error, decoder error): in-band FEC from the frame
+     that follows (opus_decode(..., decode_fec=1); libopus falls back to PLC when
+     that packet carries no LBRR data), else PLC (opus_decode(NULL)).
+   Corrupt bytes are never passed to opus_decode, and every call produces exactly
+   one 20 ms frame, so the decoder timeline never drifts. Concealed frames are
+   reported as OK for up to OPUS_MAX_CONCEALED_OK frames, then as CRC errors so
+   the caller fades out. The one-frame look-ahead adds 20 ms latency. */
 void *opusDecDecode(
     opus_decoder *dec,
     CAudioCodec::EDecError& eDecError,
@@ -458,62 +499,78 @@ void *opusDecDecode(
     unsigned long buffer_size
 	)
 {
-	int frames_per_packet, pcm_len, frame_bytes, sub_frame_bytes, i, pos, pcm_pos;
-	int crc_ok=0, corrupted=0;
-    int frame_extra_bytes = CRC_BYTES;
-	frames_per_packet = 1;
-    frame_bytes = buffer_size - frame_extra_bytes;
-	if (frame_bytes>=1 && frame_bytes<=OPUS_MAX_DATA_FRAME)
+	const int cur_ok = opusFrameOk(dec, buffer, buffer_size);
+	int concealed = 0;
+	int pcm_len;
+
+	if (dec->pending_len == 0)
 	{
-#if CRC_BYTES != 0
-		dec->CRCObject->Reset(8*CRC_BYTES);
-        for (i=CRC_BYTES; i<frame_bytes; i++)
-			dec->CRCObject->AddByte(buffer[i]);
-		int crc = dec->CRCObject->GetCRC();
-# if CRC_BYTES == 1
-        crc_ok = crc == buffer[0];
-# elif CRC_BYTES == 2
-		crc_ok = crc == ((buffer[0]<<8)|buffer[1]);
-# else
-#  error wrong CRC_BYTES
-# endif
-#endif
-		sub_frame_bytes = frame_bytes / frames_per_packet;
-		for (i=0,pos=0,pcm_pos=0; i<frames_per_packet; i++, pos+=sub_frame_bytes, pcm_pos+=pcm_len*dec->channels)
+		/* first frame after (re)start: nothing to output yet */
+		memset(dec->out_pcm, 0, OPUS_PCM_FRAME_SIZE * sizeof(opus_int16) * dec->channels);
+		pcm_len = OPUS_PCM_FRAME_SIZE;
+	}
+	else
+	{
+		pcm_len = -1;
+		if (dec->pending_ok)
 		{
-			pcm_len = opus_decode(dec->od, &buffer[frame_extra_bytes+pos], sub_frame_bytes, dec->out_pcm+pcm_pos, OPUS_MAX_PCM_FRAME, !crc_ok);
+			pcm_len = opus_decode(dec->od, &dec->pending[CRC_BYTES], dec->pending_len - CRC_BYTES,
+				dec->out_pcm, OPUS_PCM_FRAME_SIZE, 0);
+			if (pcm_len >= 0)
+				dec->last_good_toc = dec->pending[CRC_BYTES];
+			else
+				EPRINTF("opusDecDecode: opus_decode returned: %s\n", opus_strerror(pcm_len));
+		}
+		if (pcm_len < 0)
+		{
+			concealed = 1;
+			if (cur_ok)
+			{
+				pcm_len = opus_decode(dec->od, &buffer[CRC_BYTES], buffer_size - CRC_BYTES,
+					dec->out_pcm, OPUS_PCM_FRAME_SIZE, 1);
+				if (pcm_len >= 0)
+					dec->n_fec++;
+			}
 			if (pcm_len < 0)
 			{
-//				EPRINTF("opusDecDecode: opus_decode returned: %s\n", opus_strerror(pcm_len));
-				pcm_len = 0;
-				corrupted = 1;
+				pcm_len = opus_decode(dec->od, nullptr, 0, dec->out_pcm, OPUS_PCM_FRAME_SIZE, 0);
+				dec->n_plc++;
+			}
+			if (pcm_len < 0)
+			{
+				memset(dec->out_pcm, 0, OPUS_PCM_FRAME_SIZE * sizeof(opus_int16) * dec->channels);
+				pcm_len = OPUS_PCM_FRAME_SIZE;
 			}
 		}
 	}
-	else
-	{
-		corrupted = 1;
-	}
 
-	if (corrupted)
+	if (concealed)
 	{
-		memset(dec->out_pcm, 0, OPUS_PCM_FRAME_SIZE * sizeof(opus_int16) * dec->channels);
-		EPRINTF("opusDecDecode: DECODER_ERROR_CORRUPTED\n");
-        eDecError =  CAudioCodec::DECODER_ERROR_CORRUPTED;
-	}
-	else if (!crc_ok)
-	{
-		EPRINTF("opusDecDecode: DECODER_ERROR_CRC\n");
-        eDecError =  CAudioCodec::DECODER_ERROR_CRC;
+		dec->lost_run++;
+		if (dec->lost_run <= 3 || dec->lost_run % 50 == 0)
+			EPRINTF("opusDecDecode: lost frame concealed (run %d, PLC %ld, FEC %ld)\n", dec->lost_run, dec->n_plc, dec->n_fec);
+		eDecError = dec->lost_run <= OPUS_MAX_CONCEALED_OK ? CAudioCodec::DECODER_ERROR_OK : CAudioCodec::DECODER_ERROR_CRC;
 	}
 	else
 	{
-        eDecError = CAudioCodec::DECODER_ERROR_OK;
-		if (frame_bytes >= 1)
-			dec->last_good_toc = buffer[frame_extra_bytes];
+		dec->lost_run = 0;
+		eDecError = CAudioCodec::DECODER_ERROR_OK;
 	}
 
-    iChannels = dec->channels;
+	/* keep the current frame for the next call */
+	if (buffer_size <= sizeof(dec->pending))
+	{
+		memcpy(dec->pending, buffer, buffer_size);
+		dec->pending_len = int(buffer_size);
+		dec->pending_ok = cur_ok;
+	}
+	else
+	{
+		dec->pending_len = 1; /* marks a lost frame */
+		dec->pending_ok = 0;
+	}
+
+	iChannels = dec->channels;
 	dec->changed = 1;
 	return dec->out_pcm;
 }
@@ -600,7 +657,6 @@ OpusCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVec
 {
     EDecError eDecError = CAudioCodec::DECODER_ERROR_UNKNOWN; /* if no decoder is open */
     int iDecChannels = 1;
-    bool bCurBlockOK = true;
     /* Prepare data vector with CRC at the beginning (the definition with faad2 DRM interface) */
     CVector<uint8_t> vecbyPrepAudioFrame(int(audio_frame.size()+1));
     vecbyPrepAudioFrame[0] = aac_crc_bits;
@@ -618,47 +674,21 @@ OpusCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVec
                 );
 	}
 
-    //========= TODO
-    /* were uninitialised (garbage loop bound -> out-of-bounds writes); values
-       as DecOpen() used to set it: one 20 ms frame per packet = OPUS_PCM_FRAME_SIZE */
-    bool bUseReverbEffect = false;
-    bool bCurBlockFaulty = false;
+    /* opusDecDecode always delivers exactly one 20 ms frame (decoded, FEC or PLC) */
     const int iLenDecOutPerChan = OPUS_PCM_FRAME_SIZE;
-    //========= END TODO
-
-    if (!(eDecError == CAudioCodec::DECODER_ERROR_CRC && bUseReverbEffect == false) && eDecError != CAudioCodec::DECODER_ERROR_OK)
+    if (psDecOutSampleBuf != nullptr && left.Size() >= iLenDecOutPerChan && right.Size() >= iLenDecOutPerChan)
     {
-        //cerr << "Opus decode error" << endl;
-        bCurBlockOK = false;	/* Set error flag */
-    }
-    else
-    {
-        bCurBlockOK = true;
-        /* Opus can have FEC embeded, thus the audio frame is always OK */
-        if (eDecError != CAudioCodec::DECODER_ERROR_OK)
-            bCurBlockFaulty = true;
-
-        if(psDecOutSampleBuf) // might be dummy decoder
+        if (iDecChannels == 1)
         {
-            /* Conversion from _SAMPLE vector to _REAL vector for
-               resampling. ATTENTION: We use a vector which was
-               allocated inside the decoder! */
-            if (iDecChannels == 1)
+            for (int i = 0; i < iLenDecOutPerChan; i++)
+                left[i] = right[i] = psDecOutSampleBuf[i];
+        }
+        else
+        {
+            for (int i = 0; i < iLenDecOutPerChan; i++)
             {
-                /* Change type of data (short -> real) */
-                for (size_t i = 0; i < size_t(iLenDecOutPerChan); i++) {
-                    left[int(i)] = psDecOutSampleBuf[i];
-                    right[int(i)] = psDecOutSampleBuf[i];
-                }
-            }
-            else
-            {
-                /* Stereo */
-                for (size_t i = 0; i < size_t(iLenDecOutPerChan); i++)
-                {
-                    left[int(i)] = psDecOutSampleBuf[i * 2];
-                    right[int(i)] = psDecOutSampleBuf[i * 2 + 1];
-                }
+                left[i] = psDecOutSampleBuf[i * 2];
+                right[i] = psDecOutSampleBuf[i * 2 + 1];
             }
         }
     }

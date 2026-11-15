@@ -42,7 +42,8 @@
 #define OPUS_DESCRIPTION "Opus Interactive Audio Codec"
 #define OPUS_WEBSITE_LINK "http://www.opus-codec.org"
 #define OPUS_PCM_FRAME_SIZE 960  // (in samples) = 48000Hz * 0.020ms
-#define OPUS_MAX_PCM_FRAME 3840  // (in samples) = 48000Hz * 0.060ms
+#define OPUS_MAX_PCM_FRAME 3840  // (in samples) = 48000Hz * 0.080s (largest Opus packet)
+#define OPUS_MAX_CONCEALED_OK 3  // concealed (PLC/FEC) frames reported as OK before muting (60 ms)
 #define OPUS_MAX_DATA_FRAME 1276 // (in bytes)   = CELT CBR BITRATE 510400
 
 /*************
@@ -86,7 +87,7 @@ opus_encoder *opusEncOpen(
 	);
 
 int opusEncEncode(opus_encoder *enc,
-	int32_t *inputBuffer,
+	opus_int16 *inputBuffer,
 	unsigned int samplesInput,
 	unsigned char *outputBuffer,
 	unsigned int bufferSize
@@ -112,6 +113,13 @@ typedef struct _opus_decoder {
 	int last_good_toc;
 	CCRC *CRCObject;
 	opus_int16 out_pcm[OPUS_MAX_PCM_FRAME * 2]; // 2 = stereo
+	/* one frame look-ahead: frame k is decoded when frame k+1 arrives, so a lost
+	   frame k can be rebuilt from the in-band FEC (LBRR) data of frame k+1 */
+	unsigned char pending[OPUS_MAX_DATA_FRAME + 2];
+	int pending_len;  /* bytes incl. CRC, 0 = no pending frame */
+	int pending_ok;   /* pending frame passed length and CRC checks */
+	int lost_run;     /* consecutive concealed frames */
+	long n_plc, n_fec; /* statistics */
 } opus_decoder;
 
 opus_decoder *opusDecOpen(
@@ -130,8 +138,8 @@ int opusDecInit(
 
 void *opusDecDecode(
 	opus_decoder *dec,
-	unsigned char *error,
-	unsigned char *channels,
+	CAudioCodec::EDecError& eDecError,
+	int& iChannels,
 	unsigned char *buffer,
 	unsigned long buffer_size
 	);
