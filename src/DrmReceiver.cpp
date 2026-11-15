@@ -53,7 +53,8 @@ CDRMReceiver::CDRMReceiver(CSettings* nPsettings):
     RSIPacketBuf(),
     MSCDecBuf(MAX_NUM_STREAMS), MSCUseBuf(MAX_NUM_STREAMS),
     MSCSendBuf(MAX_NUM_STREAMS), iAcquRestartCnt(0),
-    iAcquDetecCnt(0), iGoodSignCnt(0), eReceiverMode(RM_DRM),
+    iAcquDetecCnt(0), bLogAcq(getenv("DREAM_LOG_ACQ") != nullptr && atoi(getenv("DREAM_LOG_ACQ")) != 0),
+    bLoggedFAC(false), bLoggedAudio(false), iFACFailAfterRM(0), bAcqFACSeen(false), llInputSamples(0), iGoodSignCnt(0), eReceiverMode(RM_DRM),
     eNewReceiverMode(RM_DRM), iAudioStreamID(STREAM_ID_NOT_USED),
     iDataStreamID(STREAM_ID_NOT_USED),
     rInitResampleOffset((_REAL) 0.0),
@@ -243,7 +244,10 @@ CDRMReceiver::DemodulateDRM(bool& bEnoughData)
             iAcquDetecCnt++;
 
             if (iAcquDetecCnt > NUM_OFDMSYM_U_ACQ_WITHOUT)
+            {
+                LogAcq("restart: watchdog");
                 SetInStartMode();
+            }
         }
     }
 
@@ -358,7 +362,13 @@ CDRMReceiver::UtilizeDRM(bool& bEnoughData)
 
             /* Store the number of correctly decoded audio blocks for
              *                            the history */
-            PlotManager.SetCurrentCDAud(AudioSourceDecoder.GetNumCorDecAudio());
+            const int iCorDecAudio = AudioSourceDecoder.GetNumCorDecAudio();
+            if (iCorDecAudio > 0 && !bLoggedAudio)
+            {
+                LogAcq("first audio");
+                bLoggedAudio = true;
+            }
+            PlotManager.SetCurrentCDAud(iCorDecAudio);
         }
     }
     if( (iDataStreamID == STREAM_ID_NOT_USED)
@@ -457,6 +467,15 @@ void CDRMReceiver::UtilizeFM(bool& bEnoughData)
 }
 
 void
+CDRMReceiver::LogAcq(const char* event)
+{
+    if (!bLogAcq)
+        return;
+    const int fs = Parameters.GetSigSampleRate();
+    fprintf(stderr, "acq t=%.3f %s\n", fs > 0 ? double(llInputSamples) / fs : 0.0, event);
+}
+
+void
 CDRMReceiver::DetectAcquiFAC()
 {
     /* If upstreamRSCI in is enabled, do not check for acquisition state because we want
@@ -478,6 +497,24 @@ CDRMReceiver::DetectAcquiFAC()
         {
             SetInStartMode();
         }
+        /* A robustness mode was found, but no FAC was ever decoded in this
+           acquisition attempt: the time/frequency acquisition most likely
+           locked onto something wrong. Do not wait for the 150 symbol
+           watchdog (DemodulateDRM), restart after a few frames (bug B7) */
+        else if ((Parameters.eAcquiState == AS_NO_SIGNAL) && !bAcqFACSeen)
+        {
+            if (TimeSync.IsRModeFound())
+                iFACFailAfterRM++;
+            else
+                iFACFailAfterRM = 0;
+            if ((iFACFailAfterRM >= NUM_FAC_FRA_U_ACQ_WITHOUT)
+                    && (iAcquDetecCnt >= NUM_FRA_U_ACQ_WITHOUT_MIN
+                        * std::max(1, Parameters.CellMappingTable.iNumSymPerFrame)))
+            {
+                LogAcq("restart: no FAC");
+                SetInStartMode();
+            }
+        }
     }
     else
     {
@@ -497,6 +534,13 @@ CDRMReceiver::DetectAcquiFAC()
         }
         else
         {
+            if (!bLoggedFAC)
+            {
+                LogAcq("first FAC OK");
+                bLoggedFAC = true;
+            }
+            /* a FAC was decoded: no fast restart in this attempt */
+            bAcqFACSeen = true;
             /* If one CRC was correct, reset acquisition since
                we assume, that this was a correct detected signal */
             iAcquRestartCnt = 0;
@@ -753,6 +797,8 @@ CDRMReceiver::SetInStartMode()
     iAcquRestartCnt = 0;
     iAcquDetecCnt = 0;
     iGoodSignCnt = 0;
+    iFACFailAfterRM = 0;
+    bAcqFACSeen = false;
     iDelayedTrackModeCnt = NUM_FAC_DEL_TRACK_SWITCH;
 
     /* Reset GUI lights */
@@ -878,7 +924,9 @@ CDRMReceiver::process()
         else
         {
             /* No I/Q recording then receive data directly in DemodDataBuf */
+            const int iFill = DemodDataBuf.GetFillLevel();
             ReceiveData.ReadData(Parameters, DemodDataBuf);
+            llInputSamples += std::max(0, DemodDataBuf.GetFillLevel() - iFill);
         }
 
         switch (eReceiverMode)
@@ -1167,6 +1215,8 @@ CDRMReceiver::InitsForWaveMode()
     /* After a new robustness mode was detected, give the time synchronization
        a bit more time for its job */
     iAcquDetecCnt = 0;
+    iAcquRestartCnt = 0;
+    LogAcq("robustness mode detected");
 
     /* Set init flags */
     ReceiveData.SetInitFlag();

@@ -32,6 +32,8 @@
 #include <string>
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #ifdef _WIN32
 # include <direct.h>
 #else
@@ -46,8 +48,24 @@
 
 CAudioSourceDecoder::CAudioSourceDecoder()
     :	bWriteToFile(false), TextMessage(false),
-      bUseReverbEffect(true), codec(nullptr)
+      bUseReverbEffect(true), codec(nullptr), bConceal(true), bLastBlockPlayed(false),
+      iTestBadStart(-1), iTestBadCount(0), iTestBadPeriod(0), lFrameCount(0)
 {
+    /* DREAM_CONCEAL=0: no concealment of lost frames (fade out and mute) */
+    const char* env = getenv("DREAM_CONCEAL");
+    bConceal = env == nullptr || atoi(env) != 0;
+    /* test hook DREAM_TEST_BAD_FRAMES=start:count[:period]: treat these
+       audio frames (counted from the start) as lost, without decoding them */
+    env = getenv("DREAM_TEST_BAD_FRAMES");
+    if (env != nullptr)
+    {
+        if (sscanf(env, "%d:%d:%d", &iTestBadStart, &iTestBadCount, &iTestBadPeriod) < 2)
+            iTestBadStart = -1;
+        else
+            cerr << "test: audio frames " << iTestBadStart << " + " << iTestBadCount
+                 << " every " << iTestBadPeriod << " are lost" << endl;
+    }
+
     /* Initialize Audio Codec List */
     CAudioCodec::InitCodecList();
 
@@ -113,20 +131,34 @@ CAudioSourceDecoder::ProcessDataInternal(CParameter & Parameters)
     iOutputBlockSize = 0;
     int iResOutBlockSize = 0;
     //cerr << "audio superframe with " << pAudioSuperFrame->getNumFrames() << " frames" << endl;
+    /* Mute unless the FAC is decoded correctly: a frame that passes its
+       8 bit CRC by chance while the signal is lost must not be played */
+    Parameters.Lock();
+    const bool bFACOK = Parameters.ReceiveStatus.FAC.GetStatus() == RX_OK;
+    Parameters.Unlock();
+
     for (unsigned j = 0; j < pAudioSuperFrame->getNumFrames(); j++)
     {
         bool bCodecUpdated = false;
         bool bCurBlockFaulty = false; // just for Opus or any other codec with FEC
+        CAudioCodec::EDecError eDecError = CAudioCodec::DECODER_ERROR_UNKNOWN;
+
+        /* test hook: lose this frame */
+        const long lFrame = lFrameCount++;
+        const bool bTestLost = iTestBadStart >= 0 && lFrame >= iTestBadStart
+                && (iTestBadPeriod > 0 ? (lFrame - iTestBadStart) % iTestBadPeriod : lFrame - iTestBadStart) < iTestBadCount;
 
         if (bGoodValues)
         {
-            CAudioCodec::EDecError eDecError;
             vector<uint8_t> audio_frame;
             uint8_t aac_crc_bits;
             pAudioSuperFrame->getFrame(audio_frame, aac_crc_bits, j);
-            if(inputSampleRate != outputSampleRate) {
+            if (bTestLost) {
+                eDecError = CAudioCodec::DECODER_ERROR_CRC;
+            }
+            else if(inputSampleRate != outputSampleRate) {
                 eDecError = codec->Decode(audio_frame, aac_crc_bits, vecTempResBufInLeft, vecTempResBufInRight);
-                if(eDecError==CAudioCodec::DECODER_ERROR_OK) {
+                if(eDecError==CAudioCodec::DECODER_ERROR_OK || eDecError==CAudioCodec::DECODER_ERROR_CONCEALED) {
                     /* Resample data */
                     iResOutBlockSize = outputSampleRate * vecTempResBufInLeft.Size() / inputSampleRate;
                     if(iResOutBlockSize != vecTempResBufOutCurLeft.Size()) { // NOOP for AAC, needed for xHE-AAC
@@ -147,11 +179,6 @@ CAudioSourceDecoder::ProcessDataInternal(CParameter & Parameters)
 
             iResOutBlockSize = vecTempResBufOutCurLeft.Size();
 
-            /* Mute unless the FAC is decoded correctly: a frame that passes its
-               8 bit CRC by chance while the signal is lost must not be played */
-            Parameters.Lock();
-            const bool bFACOK = Parameters.ReceiveStatus.FAC.GetStatus() == RX_OK;
-            Parameters.Unlock();
             bCurBlockOK = (eDecError == CAudioCodec::DECODER_ERROR_OK) && bFACOK;
 
             /* Call decoder update */
@@ -176,7 +203,37 @@ CAudioSourceDecoder::ProcessDataInternal(CParameter & Parameters)
             Parameters.Lock();
             Parameters.vecbiAudioFrameStatus.Add(1);
             Parameters.Unlock();
+            /* keep the timeline while audio is still played (concealment,
+               fade out); afterwards nothing is output, as before */
+            if (bLastBlockPlayed)
+                iResOutBlockSize = vecTempResBufOutCurLeft.Size();
         }
+
+        /* Concealment of short losses: up to ~100-120 ms of lost frames are
+           replaced (by the decoder's own concealment or by pitch/LPC
+           extrapolation of the output), but only while the FAC is fine
+           (signal present) and audio was being played. Longer losses, and
+           loss of the signal, fade out to silence (Reverb) as before. */
+        if (bCurBlockOK)
+        {
+            concealer.Good(vecTempResBufOutCurLeft, vecTempResBufOutCurRight);
+        }
+        else if (bConceal && bFACOK && bLastBlockPlayed && concealer.LossMs() < 100)
+        {
+            if (eDecError == CAudioCodec::DECODER_ERROR_CONCEALED)
+            {
+                concealer.Concealed(vecTempResBufOutCurLeft, vecTempResBufOutCurRight);
+                bCurBlockOK = bCurBlockFaulty = true;
+            }
+            else if (concealer.Conceal(vecTempResBufOutCurLeft, vecTempResBufOutCurRight,
+                                       vecTempResBufOutCurLeft.Size()))
+            {
+                bCurBlockOK = bCurBlockFaulty = true;
+            }
+        }
+        if (!bCurBlockOK)
+            concealer.Reset();
+        bLastBlockPlayed = bCurBlockOK;
 
         // This code is independent of particular audio source type and should work with all codecs
 
@@ -380,6 +437,8 @@ CAudioSourceDecoder::InitInternal(CParameter & Parameters)
         vecTempResBufOutCurRight.Init(iResOutBlockSize, 0.0);
 
         reverb.Init(outputSampleRate, bUseReverbEffect);
+        concealer.Init(outputSampleRate);
+        bLastBlockPlayed = false;
 
         /* With this parameter we define the maximum length of the output
            buffer. The cyclic buffer is only needed if we do a sample rate

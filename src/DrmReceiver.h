@@ -70,6 +70,14 @@
    could be decoded after previous acquisition try */
 #define NUM_OFDMSYM_U_ACQ_WITHOUT 150
 
+/* Faster restart of an acquisition attempt that locked onto something wrong:
+   a robustness mode was detected, but no FAC has been decoded since, time
+   synchronisation has run for this many DRM frames and this many FAC blocks
+   in a row failed their CRC (~1.2 s instead of the 150 symbols, i.e. 4 s in
+   mode A, of the watchdog above) */
+#define NUM_FRA_U_ACQ_WITHOUT_MIN 2
+#define NUM_FAC_FRA_U_ACQ_WITHOUT 3
+
 /* Number of FAC blocks for delayed tracking mode switch (caused by time needed
    for initalizing the channel estimation */
 #define NUM_FAC_DEL_TRACK_SWITCH 2
@@ -432,6 +440,12 @@ protected:
 
     int iAcquRestartCnt;
     int iAcquDetecCnt;
+    /* DREAM_LOG_ACQ=1: log acquisition events against the input time */
+    bool bLogAcq, bLoggedFAC, bLoggedAudio;
+    int iFACFailAfterRM; /* failed FACs since the robustness mode was found */
+    bool bAcqFACSeen;    /* a FAC was decoded in this acquisition attempt */
+    long long llInputSamples;
+    void LogAcq(const char* event);
     int iGoodSignCnt;
     int iDelayedTrackModeCnt;
     ERecState eReceiverState;

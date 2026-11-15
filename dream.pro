@@ -545,6 +545,7 @@ HEADERS += \
     src/resample/cspectrumresample.h \
     src/resample/caudioresample.h \
     src/sourcedecoders/reverb.h \
+    src/sourcedecoders/concealment.h \
     src/sourcedecoders/caudioreverb.h \
     src/tuner.h \
     src/sound/soundfactory.h
@@ -662,6 +663,7 @@ SOURCES += \
     src/resample/cspectrumresample.cpp \
     src/resample/caudioresample.cpp \
     src/sourcedecoders/reverb.cpp \
+    src/sourcedecoders/concealment.cpp \
     src/sourcedecoders/caudioreverb.cpp \
     src/tuner.cpp \
     src/sound/soundfactory.cpp

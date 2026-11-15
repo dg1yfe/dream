@@ -376,8 +376,17 @@ void CTimeSync::ProcessDataInternal(CParameter& Parameters)
 					   (distance to next peak) */
 					if ((rMaxValRMCorr / rSecHighPeak) > THRESHOLD_RELI_MEASURE)
 					{
-						/* Reset aquisition flag for robustness mode detection */
-						bRobModAcqu = false;
+						/* Keep the detection running until the receiver
+						   switches to tracking (first FAC with correct CRC,
+						   CDRMReceiver::SetInTrackingMode() calls
+						   StopRMDetAcqu()): a single detection can be false
+						   right after the start of a signal (bug B7: a
+						   spurious mode B, ratio 8.9, equal to the receiver's
+						   current mode, ended the detection and kept a mode A
+						   signal from locking until the 4 s watchdog). A
+						   different mode detected later still takes over;
+						   the same mode again changes nothing. */
+						bRModeFound = true;
 
 						/* Set wave mode */
 						Parameters.Lock(); 
@@ -855,6 +864,7 @@ void CTimeSync::StartAcquisition()
 	/* The regular acquisition flags */
 	bTimingAcqu = true;
 	bRobModAcqu = true;
+	bRModeFound = false;
 
 	/* Set the init flag so that the "rStartIndex" can be initialized with the
 	   center of the buffer and other important settings can be done */
@@ -898,7 +908,7 @@ void CTimeSync::SetFilterTaps(CReal rNewOffsetNorm)
 CTimeSync::CTimeSync() : iSampleRate(0), iGrdcrrDecFact(0),
 	iNumTapsHilbFilt(0), fHilLPProt(nullptr),
 	iTimeSyncPos(0), bSyncInput(false), bTimingAcqu(false),
-	bRobModAcqu(false), bAcqWasActive(false), rLambdaCoAv((CReal) 1.0),
+	bRobModAcqu(false), bRModeFound(false), bAcqWasActive(false), rLambdaCoAv((CReal) 1.0),
 	iLengthIntermCRes(NUM_ROBUSTNESS_MODES),
 	iPosInIntermCResBuf(NUM_ROBUSTNESS_MODES),
 	iLengthOverlap(NUM_ROBUSTNESS_MODES), iLenUsefPart(NUM_ROBUSTNESS_MODES),
