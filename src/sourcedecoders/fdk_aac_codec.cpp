@@ -157,7 +157,7 @@ std::string FdkLibPath()
 
 FdkAacCodec::FdkAacCodec() :
     hDecoder(nullptr), hEncoder(nullptr),bUsac(false),decode_buf(),
-    bEncDrm(false), iEncCoreSampleRate(0), encInBuf(), encOutBuf()
+    bEncDrm(false), iEncCoreSampleRate(0), bEncSbrStereo(false), encInBuf(), encOutBuf()
 {
     (void)FdkLibLoad(); /* logs which libfdk-aac was found, if any */
 }
@@ -678,6 +678,7 @@ FdkAacCodec::EncOpen(const CAudioParam& AudioParam, unsigned long& lNumSampEncIn
         cerr << "fdk-aac: unsupported audio mode" << endl;
         return false;
     }
+    bEncSbrStereo = (aot == AOT_SBR) && (nCh == 2);
     /* with SBR the encoder input runs at twice the AAC core rate */
     const UINT inputRate = UINT(iEncCoreSampleRate * (bSbr ? 2 : 1));
 
@@ -811,6 +812,16 @@ FdkAacCodec::EncSetBitrate(int iBitRate)
            slot. Round to whole bytes per 960-sample frame. */
         const long bitsPerFrame = (long(iBitRate) * 960 / iEncCoreSampleRate) & ~7L;
         rate = UINT(bitsPerFrame * iEncCoreSampleRate / 960);
+        /* fdk chooses its SBR configuration (stop frequency, noise floor,
+           time/frequency resolution) from this bitrate. For stereo SBR with a
+           12 kHz core it uses a narrow (about 10 kHz), tonal high band below
+           28 kbit/s; from 28 kbit/s on the band reaches about 11.5 kHz and is
+           noise-like, at a small cost to the core. The size of every access
+           unit is set exactly by EncSetNextFrameSize() (the DRM encoder
+           guarantees that, see HasDrmEncoder()), so the bitrate only selects
+           the configuration. Below 22 kbit/s the core would lose too much. */
+        if (bEncSbrStereo && iEncCoreSampleRate == 12000 && rate >= 22000 && rate < 28000)
+            rate = 28000;
     }
     AACENC_ERROR r = aacEncoder_SetParam(hEncoder, AACENC_BITRATE, rate);
     if (r == AACENC_OK && bEncDrm) {

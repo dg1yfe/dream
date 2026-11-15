@@ -70,6 +70,7 @@ protected:
     /* Encoder state */
     bool bEncDrm;             /* true: DRM AAC (TT_DRM, 960), false: ADTS (AC_MPEGAAC) */
     int iEncCoreSampleRate;   /* AAC core sample rate (12/24/48 kHz for DRM) */
+    bool bEncSbrStereo;       /* AAC+SBR with a stereo (CPE) core, not parametric stereo */
     std::vector<INT_PCM> encInBuf;
     std::vector<UCHAR> encOutBuf;
 public:
