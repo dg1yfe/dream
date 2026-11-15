@@ -546,6 +546,7 @@ HEADERS += \
     src/resample/caudioresample.h \
     src/sourcedecoders/reverb.h \
     src/sourcedecoders/concealment.h \
+    src/sourcedecoders/peaklimiter.h \
     src/sourcedecoders/caudioreverb.h \
     src/tuner.h \
     src/sound/soundfactory.h
@@ -664,6 +665,7 @@ SOURCES += \
     src/resample/caudioresample.cpp \
     src/sourcedecoders/reverb.cpp \
     src/sourcedecoders/concealment.cpp \
+    src/sourcedecoders/peaklimiter.cpp \
     src/sourcedecoders/caudioreverb.cpp \
     src/tuner.cpp \
     src/sound/soundfactory.cpp

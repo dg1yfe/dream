@@ -49,11 +49,15 @@ static NeAACDecOpen_t *NeAACDecOpen;
 static NeAACDecInitDRM_t *NeAACDecInitDRM;
 static NeAACDecClose_t *NeAACDecClose;
 static NeAACDecDecode_t *NeAACDecDecode;
+static NeAACDecGetCurrentConfiguration_t *NeAACDecGetCurrentConfiguration;
+static NeAACDecSetConfiguration_t *NeAACDecSetConfiguration;
 static const LIBFUNC FaadLibFuncs[] = {
     { "NeAACDecOpen",    (void**)&NeAACDecOpen,    (void*)nullptr },
     { "NeAACDecInitDRM", (void**)&NeAACDecInitDRM, (void*)nullptr },
     { "NeAACDecClose",   (void**)&NeAACDecClose,   (void*)nullptr },
     { "NeAACDecDecode",  (void**)&NeAACDecDecode,  (void*)nullptr },
+    { "NeAACDecGetCurrentConfiguration", (void**)&NeAACDecGetCurrentConfiguration, (void*)nullptr },
+    { "NeAACDecSetConfiguration", (void**)&NeAACDecSetConfiguration, (void*)nullptr },
     { nullptr, nullptr, nullptr }
 };
 /* faad2 built by macx/build-faad-drm.sh exports NeAACDecDreamDrmFixes() (HCR short-window
@@ -66,6 +70,8 @@ static const LIBFUNC FaadLibFuncsFixed[] = {
     { "NeAACDecInitDRM", (void**)&NeAACDecInitDRM, (void*)nullptr },
     { "NeAACDecClose",   (void**)&NeAACDecClose,   (void*)nullptr },
     { "NeAACDecDecode",  (void**)&NeAACDecDecode,  (void*)nullptr },
+    { "NeAACDecGetCurrentConfiguration", (void**)&NeAACDecGetCurrentConfiguration, (void*)nullptr },
+    { "NeAACDecSetConfiguration", (void**)&NeAACDecSetConfiguration, (void*)nullptr },
     { "NeAACDecDreamDrmFixes", (void**)&NeAACDecDreamDrmFixes, (void*)nullptr },
     { nullptr, nullptr, nullptr }
 };
@@ -128,7 +134,7 @@ static bool FaacCheckCallback()
 /* Implementation *************************************************************/
 
 AacCodec::AacCodec() :
-    hFaadDecoder(nullptr), hFaacEncoder(nullptr), iEncChannels(1)
+    hFaadDecoder(nullptr), bFaadFloat(false), hFaacEncoder(nullptr), iEncChannels(1)
 {
 #ifndef USE_FAAD2_LIBRARY
     if (hFaadLib == nullptr)
@@ -252,6 +258,19 @@ AacCodec::DecOpen(const CAudioParam& AudioParam, int& iAudioSampleRate)
         }
         NeAACDecInitDRM(&hFaadDecoder, iAACSampleRate,
                         (unsigned char)iDRMchanMode);
+
+        /* Float output: faad's 16 bit output clips peaks above full scale
+           (frequent with SBR on loud material); the receiver limits them
+           smoothly before quantisation instead (CPeakLimiter) */
+        bFaadFloat = false;
+        NeAACDecConfigurationPtr pConfig = NeAACDecGetCurrentConfiguration(hFaadDecoder);
+        if (pConfig != nullptr)
+        {
+            pConfig->outputFormat = FAAD_FMT_FLOAT;
+            bFaadFloat = NeAACDecSetConfiguration(hFaadDecoder, pConfig) != 0;
+            if (!bFaadFloat)
+                cerr << "faad: float output not available, using 16 bit" << endl;
+        }
     }
     /* In case of SBR, AAC sample rate is half the total sample rate.
        Length of output is doubled if SBR is used */
@@ -325,10 +344,9 @@ AacCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVect
         if (DecFrameInfo.channels == 1)
         {
             //cerr << "resample " << iLenDecOutPerChan << " mono samples" << endl;
-            /* Change type of data (short -> real) */
+            /* Change type of data (short / float -> real) */
             for (size_t i = 0; i < size_t(iLenDecOutPerChan); i++) {
-                left[int(i)] = psDecOutSampleBuf[i];
-                right[int(i)] = psDecOutSampleBuf[i];
+                left[int(i)] = right[int(i)] = FaadSample(psDecOutSampleBuf, i);
             }
 
         }
@@ -338,8 +356,8 @@ AacCodec::Decode(const vector<uint8_t>& audio_frame, uint8_t aac_crc_bits, CVect
             //cerr << "resample " << iLenDecOutPerChan << " stereo samples" << endl;
             for (size_t i = 0; i < size_t(iLenDecOutPerChan); i++)
             {
-                left[i] = psDecOutSampleBuf[i * 2];
-                right[i] = psDecOutSampleBuf[i * 2 + 1];
+                left[i] = FaadSample(psDecOutSampleBuf, i * 2);
+                right[i] = FaadSample(psDecOutSampleBuf, i * 2 + 1);
             }
         }
     }

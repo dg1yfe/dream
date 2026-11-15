@@ -120,6 +120,7 @@ set(DREAM_CORE_SOURCES
     resample/caudioresample.cpp
     sourcedecoders/reverb.cpp
     sourcedecoders/concealment.cpp
+    sourcedecoders/peaklimiter.cpp
     sourcedecoders/caudioreverb.cpp
     tuner.cpp
     sound/soundfactory.cpp
