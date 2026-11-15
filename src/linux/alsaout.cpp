@@ -197,7 +197,7 @@ void CSoundOutAlsa::SetItem(string sNewDevice)
     }
 }
 
-string CSoundOutAlsa::GetItem()
+string CSoundOutAlsa::GetItemName()
 {
     return sCurrentDevice;
 }

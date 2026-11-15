@@ -26,7 +26,7 @@
 # The decoder actually used (fdk / patched faad2 / stock faad2) is shown per case.
 #
 # Always runs the tone test (620 Hz left, 1130 Hz right). Without an audio
-# file, a speech clip from macOS 'say' is used as second source if available.
+# file, a speech clip from macOS 'say' (Linux: espeak-ng + ffmpeg) is used as second source if available.
 # Prints PASS/FAIL per case and a summary; exit status 1 if any case fails.
 
 set -u
@@ -99,6 +99,12 @@ elif command -v say >/dev/null; then
 One two three four five six seven eight nine ten. This sentence is repeated to fill the clip. \
 Digital Radio Mondiale loopback test. The quick brown fox jumps over the lazy dog." 2>/dev/null \
         && to_wav "$WORK/speech.aiff" "$WORK/speech.wav" && SOURCES="$SOURCES speech:$WORK/speech.wav"
+elif command -v espeak-ng >/dev/null && command -v ffmpeg >/dev/null; then
+    # Linux: same text with espeak-ng (the speech metrics were tuned on macOS 'say')
+    espeak-ng -w "$WORK/speech-raw.wav" "Digital Radio Mondiale loopback test. The quick brown fox jumps over the lazy dog. \
+One two three four five six seven eight nine ten. This sentence is repeated to fill the clip. \
+Digital Radio Mondiale loopback test. The quick brown fox jumps over the lazy dog." 2>/dev/null \
+        && to_wav "$WORK/speech-raw.wav" "$WORK/speech.wav" && SOURCES="$SOURCES speech:$WORK/speech.wav"
 fi
 
 # --- cases: name | environment | transmitter options | expected channels ---------

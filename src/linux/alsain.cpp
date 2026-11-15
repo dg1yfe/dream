@@ -190,7 +190,7 @@ void CSoundInAlsa::SetItem(string sNewDevice)
 }
 
 
-string CSoundInAlsa::GetItem()
+string CSoundInAlsa::GetItemName()
 {
     return sCurrentDevice;
 }

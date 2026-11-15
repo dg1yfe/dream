@@ -40,11 +40,15 @@
 # define GETPROC(a, b) dlsym(a, b)
 # define FREELIB(a) dlclose(a)
 #endif
-#ifdef __APPLE__
+#ifndef _WIN32
 # include <cstdlib>
 # include <cstring>
 # include <string>
 # include <vector>
+#endif
+#if defined(__linux__)
+# include <unistd.h>
+# include <climits>
 #endif
 
 typedef struct LIBFUNC
@@ -63,7 +67,7 @@ public:
 	static void* Load(const char** LibraryNames, const LIBFUNC* LibFuncs, bool (*LibCheckCallback)()=nullptr)
 	{
 		void* hLib = nullptr;
-#ifdef __APPLE__
+#ifndef _WIN32
 		const std::vector<std::string> names = Candidates(LibraryNames);
 		for (size_t l = 0; l < names.size(); l++)
 		{
@@ -99,8 +103,8 @@ public:
 		}
 		return hLib;
 	}
-#ifdef __APPLE__
-	/* dlopen() of a bare leaf name only searches DYLD_LIBRARY_PATH, LC_RPATH,
+#ifndef _WIN32
+	/* macOS: dlopen() of a bare leaf name only searches DYLD_LIBRARY_PATH, LC_RPATH,
 	   the current directory and DYLD_FALLBACK_LIBRARY_PATH (/usr/local/lib,
 	   /usr/lib) - never Homebrew's /opt/homebrew/lib or the app bundle. So for
 	   every leaf name try, in order:
@@ -113,6 +117,11 @@ public:
 	     6. /opt/homebrew/lib               (Homebrew, Apple Silicon)
 	     7. /usr/local/lib                  (Homebrew Intel / manual installs)
 	     8. the bare name                   (dyld default search)
+	   Linux and other ELF systems:
+	     1. each directory in $DREAM_LIB_PATH
+	     2. <dir of the dream binary>/../lib/dream  (install / tarball layout)
+	     3. DREAM_DEPS_LIBDIR               (compile-time define, <repo>/.deps/linux-<arch>/lib)
+	     4. the bare name                   (DT_RUNPATH, LD_LIBRARY_PATH, ld.so.cache)
 	   A candidate that loads but fails the symbol/check callback is skipped,
 	   so e.g. a non-DRM libfaac in an earlier location does not hide a good one. */
 	static std::vector<std::string> Candidates(const char** LibraryNames)
@@ -133,14 +142,28 @@ public:
 				start = end + 1;
 			}
 		}
+#ifdef __APPLE__
 		dirs.push_back("@executable_path/../Frameworks");
 		dirs.push_back("@loader_path");
 		dirs.push_back("@rpath");
+#elif defined(__linux__)
+		char exe[PATH_MAX];
+		ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+		if (n > 0)
+		{
+			std::string e(exe, size_t(n));
+			size_t slash = e.rfind('/');
+			if (slash != std::string::npos)
+				dirs.push_back(e.substr(0, slash) + "/../lib/dream");
+		}
+#endif
 #ifdef DREAM_DEPS_LIBDIR
 		dirs.push_back(DREAM_DEPS_LIBDIR);
 #endif
+#ifdef __APPLE__
 		dirs.push_back("/opt/homebrew/lib");
 		dirs.push_back("/usr/local/lib");
+#endif
 
 		std::vector<std::string> names;
 		for (size_t d = 0; d < dirs.size(); d++)

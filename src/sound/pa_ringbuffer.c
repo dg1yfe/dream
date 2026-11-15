@@ -88,6 +88,11 @@
 #      define PaUtil_FullMemoryBarrier()  asm volatile("mfence":::"memory")
 #      define PaUtil_ReadMemoryBarrier()  asm volatile("lfence":::"memory")
 #      define PaUtil_WriteMemoryBarrier() asm volatile("sfence":::"memory")
+#   elif defined( __ATOMIC_SEQ_CST )
+/* any other GCC/clang target (e.g. Linux aarch64/arm): C11-style fences */
+#      define PaUtil_FullMemoryBarrier()  __atomic_thread_fence(__ATOMIC_SEQ_CST)
+#      define PaUtil_ReadMemoryBarrier()  __atomic_thread_fence(__ATOMIC_ACQUIRE)
+#      define PaUtil_WriteMemoryBarrier() __atomic_thread_fence(__ATOMIC_RELEASE)
 #   else
 #      ifdef ALLOW_SMP_DANGERS
 #         warning Memory barriers not defined on this system or system unknown

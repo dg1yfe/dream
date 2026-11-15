@@ -101,6 +101,18 @@ binary's directory, its rpaths (dev builds: `.deps/<arch>/lib`), `$DREAM_LIB_PAT
 the patched build from `macx/build.sh`. `DREAM_NO_FDK=1` disables loading it
 (`DREAM_NO_FDK_ENCODER=1` only hides its DRM encoder).
 
+### Linux (Docker or Debian 13 / Ubuntu 24.04+)
+
+    linux/docker/run.sh --test --package      # build + loopback test + dist/dream-linux-<arch>.tar.gz
+
+This builds Qt 6 `dream` and `dream-console` in a pinned Debian 13 container. It
+also builds the runtime codec libraries with `linux/build-deps.sh`: the same pinned
+sources and `macx/patches` as on macOS, but no fdk-aac. Add
+`--platform linux/amd64` for x86_64. Native builds, the tarball layout and the
+audio backends (PortAudio, PulseAudio, ALSA, JACK) are described in
+[linux/README.md](linux/README.md). Licence texts for binary distributions are in
+`doc/licenses/`.
+
 ### Generic CMake
 
     cmake -S . -B build/gui -G Ninja -DCMAKE_BUILD_TYPE=Release
