@@ -76,8 +76,9 @@ CI jobs.
     open build/gui/Dream.app
 
 `macx/build.sh` fetches and builds the two codecs Homebrew does not provide into
-`.deps/<arch>` (once): **fdk-aac 2.0.3** (AAC/HE-AAC/xHE-AAC decoder) and a
-DRM-capable **libfaac_drm** (the DRM AAC encoder, `macx/build-faac-drm.sh`).
+`.deps/<arch>` (once, rebuilt when a patch changes): **fdk-aac 2.0.3** with
+`macx/patches/fdk-aac-2.0.3-drm-encoder.patch` (AAC/HE-AAC/xHE-AAC decoder and the
+DRM AAC/HE-AAC encoder) and **libfaac_drm** (fallback DRM AAC encoder, `macx/build-faac-drm.sh`).
 Other options: `--console` (no-Qt binary in `build/console/dream`), `--brew`
 (install missing Homebrew packages), `--deploy` (self-contained, ad-hoc signed
 `Dream.app` + `Dream.dmg` via `macx/deploy.sh`). Sound I/O uses PortAudio

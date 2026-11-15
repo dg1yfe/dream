@@ -32,7 +32,9 @@ for lib in "$PREFIX/lib/libfaac_drm.dylib" "$BREW_PREFIX/lib/libfaad_drm.dylib";
     if [ -e "$lib" ]; then
         cp -L "$lib" "$app/Contents/Frameworks/$(basename "$lib")"
         chmod u+w "$app/Contents/Frameworks/$(basename "$lib")"
-        install_name_tool -id "@rpath/$(basename "$lib")" "$app/Contents/Frameworks/$(basename "$lib")"
+        install_name_tool -id "@rpath/$(basename "$lib")" "$app/Contents/Frameworks/$(basename "$lib")" 2>/dev/null
+        # re-sign now, otherwise macdeployqt's own signature check complains
+        codesign --force --sign - "$app/Contents/Frameworks/$(basename "$lib")"
     fi
 done
 

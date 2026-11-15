@@ -11,9 +11,10 @@
 #      ARCH (uname -m), JOBS (sysctl hw.ncpu), PREFIX for local deps (.deps/$ARCH),
 #      CMAKE_ARGS (extra args passed to cmake configure).
 #
-# Local (non-Homebrew) deps, built once into .deps/$ARCH:
-#   fdk-aac 2.0.3  – AAC/HE-AAC/xHE-AAC decoder (Homebrew formula disabled 2026-09)
-#   faac 1.31.1 DRM – libfaac_drm.dylib, the DRM AAC encoder (macx/build-faac-drm.sh), dlopen()ed
+# Local (non-Homebrew) deps, built into .deps/$ARCH (rebuilt when their patches change):
+#   fdk-aac 2.0.3 + macx/patches/fdk-aac-2.0.3-drm-encoder.patch – AAC/HE-AAC/xHE-AAC decoder
+#                   and DRM AAC/HE-AAC encoder (Homebrew formula disabled 2026-09)
+#   libfaac_drm   – fallback DRM AAC encoder (macx/build-faac-drm.sh), dlopen()ed
 set -eu
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,7 +37,7 @@ for a in "$@"; do
         --deps-only) deps_only=1 ;;
         --brew) do_brew=1 ;;
         --deploy) do_deploy=1 ;;
-        -h|--help) sed -n '2,17p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,18p' "$0"; exit 0 ;;
         *) echo "unknown option: $a" >&2; exit 2 ;;
     esac
 done
@@ -66,30 +67,68 @@ if [ -n "$missing" ]; then
 fi
 
 # ---------------------------------------------------------------- fdk-aac
-if [ ! -f "$PREFIX/lib/pkgconfig/fdk-aac.pc" ]; then
-    echo "== building fdk-aac $FDK_TAG into $PREFIX"
-    src=$REPO/.deps/src/fdk-aac
-    if [ ! -d "$src/.git" ]; then
+# Stock fdk-aac 2.0.3 + macx/patches/fdk-aac-2.0.3-drm-encoder.patch (DRM AAC/HE-AAC
+# encoder: TT_DRM, 960-sample granule, DRM CRC). The git checkout in .deps/src/fdk-aac
+# is only a cache: the pristine commit is exported to a scratch tree and patched
+# there, so a hand-edited checkout never leaks into the build. A stamp file with the
+# patch's sha256 makes this idempotent: an unpatched or older-patch install is rebuilt.
+FDK_PATCH=$REPO/macx/patches/fdk-aac-2.0.3-drm-encoder.patch
+FDK_STAMP=$PREFIX/lib/fdk-aac.dream-patch
+if [ -f "$FDK_PATCH" ]; then
+    fdk_want=$(shasum -a 256 "$FDK_PATCH" | cut -d' ' -f1)
+else
+    fdk_want=none
+fi
+fdk_have=$(cat "$FDK_STAMP" 2>/dev/null || echo missing)
+if [ ! -f "$PREFIX/lib/pkgconfig/fdk-aac.pc" ] || [ "$fdk_have" != "$fdk_want" ]; then
+    echo "== building fdk-aac $FDK_TAG (DRM patch: $fdk_want) into $PREFIX"
+    cache=$REPO/.deps/src/fdk-aac
+    if [ ! -d "$cache/.git" ]; then
         mkdir -p "$REPO/.deps/src"
-        git clone --quiet --depth 1 --branch "$FDK_TAG" "$FDK_URL" "$src"
+        git clone --quiet --depth 1 --branch "$FDK_TAG" "$FDK_URL" "$cache"
     fi
-    got=$(git -C "$src" rev-parse HEAD)
+    git -C "$cache" cat-file -e "$FDK_COMMIT^{commit}" 2>/dev/null ||
+        git -C "$cache" fetch --quiet --depth 1 origin "refs/tags/$FDK_TAG:refs/tags/$FDK_TAG"
+    got=$(git -C "$cache" rev-parse "$FDK_TAG^{commit}")
     if [ "$got" != "$FDK_COMMIT" ]; then
-        echo "error: $src is at $got, expected $FDK_COMMIT ($FDK_TAG)" >&2
+        echo "error: tag $FDK_TAG in $cache is $got, expected $FDK_COMMIT" >&2
         exit 1
     fi
-    MACOSX_DEPLOYMENT_TARGET=$DEPS_DEPLOYMENT_TARGET cmake -S "$src" -B "$REPO/.deps/build/fdk-aac-$ARCH" -G Ninja \
+    src=$REPO/.deps/build/fdk-aac-src-$ARCH
+    bld=$REPO/.deps/build/fdk-aac-$ARCH
+    rm -rf "$src" "$bld"
+    mkdir -p "$src"
+    git -C "$cache" archive "$FDK_COMMIT" | tar -x -C "$src"
+    if [ -f "$FDK_PATCH" ]; then
+        (cd "$src" && patch -p1 --forward --quiet < "$FDK_PATCH")
+    else
+        echo "warning: $FDK_PATCH not found - fdk-aac will have no DRM encoder" >&2
+    fi
+    # remove an older install so no stale headers/libs survive
+    rm -f "$PREFIX"/lib/libfdk-aac.* "$PREFIX/lib/pkgconfig/fdk-aac.pc" "$FDK_STAMP"
+    rm -rf "$PREFIX/include/fdk-aac" "$PREFIX/lib/cmake/fdk-aac"
+    MACOSX_DEPLOYMENT_TARGET=$DEPS_DEPLOYMENT_TARGET cmake -S "$src" -B "$bld" -G Ninja \
         -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="$ARCH" \
         -DCMAKE_INSTALL_PREFIX="$PREFIX" -DCMAKE_INSTALL_NAME_DIR=@rpath \
         -DBUILD_SHARED_LIBS=ON -DBUILD_PROGRAMS=OFF
-    cmake --build "$REPO/.deps/build/fdk-aac-$ARCH" -j "$JOBS"
-    cmake --install "$REPO/.deps/build/fdk-aac-$ARCH"
+    cmake --build "$bld" -j "$JOBS"
+    cmake --install "$bld"
+    echo "$fdk_want" > "$FDK_STAMP"
 fi
 
 # ---------------------------------------------------------------- faac (DRM encoder)
-if [ ! -f "$PREFIX/lib/libfaac_drm.dylib" ] && [ -x "$REPO/macx/build-faac-drm.sh" ]; then
-    echo "== building libfaac_drm into $PREFIX"
-    ARCH=$ARCH MACOSX_DEPLOYMENT_TARGET=$DEPS_DEPLOYMENT_TARGET "$REPO/macx/build-faac-drm.sh" "$PREFIX"
+# libfaac_drm.dylib is dlopen()ed by AacCodec (fallback DRM encoder). Rebuilt when
+# the script or its patches change (stamp = sha256 over both).
+if [ -x "$REPO/macx/build-faac-drm.sh" ]; then
+    FAAC_STAMP=$PREFIX/lib/libfaac_drm.dream-stamp
+    faac_want=$(cat "$REPO/macx/build-faac-drm.sh" "$REPO"/macx/patches/faac-*.patch 2>/dev/null |
+                shasum -a 256 | cut -d' ' -f1)
+    faac_have=$(cat "$FAAC_STAMP" 2>/dev/null || echo missing)
+    if [ ! -f "$PREFIX/lib/libfaac_drm.dylib" ] || [ "$faac_have" != "$faac_want" ]; then
+        echo "== building libfaac_drm into $PREFIX"
+        ARCH=$ARCH MACOSX_DEPLOYMENT_TARGET=$DEPS_DEPLOYMENT_TARGET "$REPO/macx/build-faac-drm.sh" "$PREFIX"
+        echo "$faac_want" > "$FAAC_STAMP"
+    fi
 fi
 
 [ $deps_only = 1 ] && exit 0
