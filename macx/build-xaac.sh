@@ -1,7 +1,7 @@
 #!/bin/sh
 # Build Google/Ittiam libxaac's AAC encoder (AAC-LC, HE-AAC v1/v2, also LD/ELD/USAC)
 # for DREAM on macOS: the DRM AAC/HE-AAC/HE-AACv2 encoder DREAM loads at run time
-# (XaacCodec; docs/research/xaac-spike.md, xaac960.md, xaac-drm.md).
+# (XaacCodec in src/sourcedecoders/xaac_codec.cpp).
 #
 # The pinned tree is patched with macx/patches/libxaac-*.patch (applied in name order):
 # 960-sample HE-AAC v1/v2, 12 kHz core, DRM access units (ER AAC with VCB11/HCR, CRC,
