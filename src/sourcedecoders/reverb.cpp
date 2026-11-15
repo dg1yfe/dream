@@ -15,15 +15,17 @@ void Reverb::Init(int outputSampleRate, bool bUse)
     OldRight.Init(0);
 }
 
-ETypeRxStatus Reverb::apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REAL> CurLeft, CVector<_REAL> CurRight)
+ETypeRxStatus Reverb::apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REAL>& CurLeft, CVector<_REAL>& CurRight)
 {
     int iResOutBlockSize = CurLeft.Size();
-    if(OldLeft.Size()==0) OldLeft.Init(iResOutBlockSize, 0.0);
-    if(OldRight.Size()==0) OldRight.Init(iResOutBlockSize, 0.0);
-
     bool okToReverb = bUseReverbEffect;
-    if(OldLeft.Size()!=iResOutBlockSize) okToReverb = false;
-    if(OldRight.Size()!=iResOutBlockSize) okToReverb = false;
+    /* block size changed (or first block): restart from silence, the output
+       is written from the old block below and must not read past its end */
+    if(OldLeft.Size()!=iResOutBlockSize || OldRight.Size()!=iResOutBlockSize) {
+        okToReverb = false;
+        OldLeft.Init(iResOutBlockSize, 0.0);
+        OldRight.Init(iResOutBlockSize, 0.0);
+    }
 
     vector<_REAL> tempLeft, tempRight;
     tempLeft.resize(unsigned(iResOutBlockSize));
@@ -47,7 +49,7 @@ ETypeRxStatus Reverb::apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REA
             for (int i = 0; i < iResOutBlockSize; i++)
             {
                 /* Linear attenuation with time of OLD buffer */
-                const _REAL rAtt = 1.0 - _REAL(i / iResOutBlockSize);
+                const _REAL rAtt = 1.0 - _REAL(i) / _REAL(iResOutBlockSize);
 
                 OldLeft[i] *= rAtt;
                 OldRight[i] *= rAtt;
@@ -55,7 +57,7 @@ ETypeRxStatus Reverb::apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REA
                 if (okToReverb)
                 {
                     /* Fade in input signal for reverberation to avoid clicks */
-                    const _REAL rAttRev = _REAL( i / iResOutBlockSize);
+                    const _REAL rAttRev = _REAL(i) / _REAL(iResOutBlockSize);
 
                     /* Cross-fade reverberation effect */
                     const _REAL rRevSam = (1.0 - rAtt) * AudioRev.ProcessSample(OldLeft[i] * rAttRev, OldRight[i] * rAttRev);
@@ -118,7 +120,7 @@ ETypeRxStatus Reverb::apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REA
             for (int i = 0; i < iResOutBlockSize; i++)
             {
                 /* Linear attenuation with time */
-                const _REAL rAtt = _REAL( i / iResOutBlockSize);
+                const _REAL rAtt = _REAL(i) / _REAL(iResOutBlockSize);
 
                 tempLeft[unsigned(i)] *= rAtt;
                 tempRight[unsigned(i)] *= rAtt;

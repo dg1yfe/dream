@@ -10,7 +10,7 @@ class Reverb
 public:
     Reverb();
     void Init(int outputSampleRate, bool bUse);
-    ETypeRxStatus apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REAL> CurLeft, CVector<_REAL> CurRight);
+    ETypeRxStatus apply(bool bCurBlockOK, bool bCurBlockFaulty, CVector<_REAL>& CurLeft, CVector<_REAL>& CurRight);
 private:
     bool bAudioWasOK, bUseReverbEffect;
     CVector<_REAL> OldLeft;
