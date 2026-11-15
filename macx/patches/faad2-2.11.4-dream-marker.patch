@@ -10,7 +10,7 @@ index 8733a44..ba905c7 100644
                                     char **faad_copyright_string);
  
 +/* DREAM macOS port: returns a bit mask of the DRM fixes compiled in
-+   (1 = HCR short-window codeword order, 2 = MPEG-4 PS in DRM mode).
++   (1 = HCR short-window order, 2 = MPEG-4 PS in DRM, 4 = HCR last segment).
 +   Lets DREAM prefer this build over a stock libfaad_drm. */
 +NEAACDECAPI int NeAACDecDreamDrmFixes(void);
 +
@@ -27,7 +27,7 @@ index 4de3e37..6dd11d1 100644
  
 +int NeAACDecDreamDrmFixes(void)
 +{
-+    return 1 | 2;
++    return 1 | 2 | 4;
 +}
 +
  char* NeAACDecGetErrorMessage(unsigned char errcode)

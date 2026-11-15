@@ -1,0 +1,29 @@
+DREAM macOS port: faad2 2.11.4 DRM fix - HCR last-segment merge with more than 32 leftover bits.
+
+When the HCR area is longer than the sum of the segment widths, the remaining bits
+extend the last segment. hcr.c merges them with what is left of that segment after
+its priority codeword. For a leftover of 33..63 bits it took showbits_hcr(.., 32), the
+TOP 32 bits of the leftover, as its low word; the correct low word is the leftover's
+bufa. Such frames decoded to garbage (often reported as error 17). Found by Barclay
+(libxaac DRM encoder, which avoids the layout); fdk-aac decodes these streams.
+
+diff --git a/libfaad/hcr.c b/libfaad/hcr.c
+index 91c294f..7b6a4de 100644
+--- a/libfaad/hcr.c
++++ b/libfaad/hcr.c
+@@ -338,10 +338,14 @@ uint8_t reordered_spectral_data(NeAACDecStruct *hDecoder, ic_stream *ics,
+ 
+                                                 if (segment[numberOfSegments-1].len > 32)
+                                                 {
++                                                    /* leftover of the last segment (len 33..63 bits) goes into the
++                                                       low len bits: high part = bufb (masked), low part = the whole
++                                                       bufa. showbits_hcr(.., 32) returned the TOP 32 bits instead,
++                                                       i.e. the wrong bits (DREAM macOS port patch) */
+                                                     segment[numberOfSegments-1].bufb = segment[numberOfSegments].bufb +
+                                                         showbits_hcr(&segment[numberOfSegments-1], segment[numberOfSegments-1].len - 32);
+                                                     segment[numberOfSegments-1].bufa = segment[numberOfSegments].bufa +
+-                                                        showbits_hcr(&segment[numberOfSegments-1], 32);
++                                                        segment[numberOfSegments-1].bufa;
+                                                 } else {
+                                                     segment[numberOfSegments-1].bufa = segment[numberOfSegments].bufa +
+                                                         showbits_hcr(&segment[numberOfSegments-1], segment[numberOfSegments-1].len);

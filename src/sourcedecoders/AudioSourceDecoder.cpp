@@ -55,7 +55,8 @@ CAudioSourceDecoder::CAudioSourceDecoder()
     const char* env = getenv("DREAM_CONCEAL");
     bConceal = env == nullptr || atoi(env) != 0;
     /* test hook DREAM_TEST_BAD_FRAMES=start:count[:period]: treat these
-       audio frames (counted from the start) as lost, without decoding them */
+       audio frames (counted from the start) as lost: their CRC byte is
+       corrupted before decoding, so the decoder sees (and may conceal) them */
     env = getenv("DREAM_TEST_BAD_FRAMES");
     if (env != nullptr)
     {
@@ -154,9 +155,11 @@ CAudioSourceDecoder::ProcessDataInternal(CParameter & Parameters)
             uint8_t aac_crc_bits;
             pAudioSuperFrame->getFrame(audio_frame, aac_crc_bits, j);
             if (bTestLost) {
-                eDecError = CAudioCodec::DECODER_ERROR_CRC;
+                /* corrupt the frame's CRC byte and still decode it, so the
+                   decoder sees the loss (and can conceal it) like a real one */
+                aac_crc_bits ^= 0xA5;
             }
-            else if(inputSampleRate != outputSampleRate) {
+            if(inputSampleRate != outputSampleRate) {
                 eDecError = codec->Decode(audio_frame, aac_crc_bits, vecTempResBufInLeft, vecTempResBufInRight);
                 if(eDecError==CAudioCodec::DECODER_ERROR_OK || eDecError==CAudioCodec::DECODER_ERROR_CONCEALED) {
                     /* Resample data */

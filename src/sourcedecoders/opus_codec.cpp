@@ -489,8 +489,9 @@ static int opusFrameOk(opus_decoder *dec, const unsigned char *buffer, unsigned 
      that packet carries no LBRR data), else PLC (opus_decode(NULL)).
    Corrupt bytes are never passed to opus_decode, and every call produces exactly
    one 20 ms frame, so the decoder timeline never drifts. Concealed frames are
-   reported as OK for up to OPUS_MAX_CONCEALED_OK frames, then as CRC errors so
-   the caller fades out. The one-frame look-ahead adds 20 ms latency. */
+   returned as DECODER_ERROR_CONCEALED (with the PLC/FEC audio); the receiver's
+   concealment budget decides how long they are played. The one-frame
+   look-ahead adds 20 ms latency. */
 void *opusDecDecode(
     opus_decoder *dec,
     CAudioCodec::EDecError& eDecError,
@@ -549,7 +550,8 @@ void *opusDecDecode(
 		dec->lost_run++;
 		if (dec->lost_run <= 3 || dec->lost_run % 50 == 0)
 			EPRINTF("opusDecDecode: lost frame concealed (run %d, PLC %ld, FEC %ld)\n", dec->lost_run, dec->n_plc, dec->n_fec);
-		eDecError = dec->lost_run <= OPUS_MAX_CONCEALED_OK ? CAudioCodec::DECODER_ERROR_OK : CAudioCodec::DECODER_ERROR_CRC;
+		/* the PLC/FEC audio is in out_pcm; the receiver decides how long to play it */
+		eDecError = CAudioCodec::DECODER_ERROR_CONCEALED;
 	}
 	else
 	{

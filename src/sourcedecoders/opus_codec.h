@@ -43,7 +43,6 @@
 #define OPUS_WEBSITE_LINK "http://www.opus-codec.org"
 #define OPUS_PCM_FRAME_SIZE 960  // (in samples) = 48000Hz * 0.020ms
 #define OPUS_MAX_PCM_FRAME 3840  // (in samples) = 48000Hz * 0.080s (largest Opus packet)
-#define OPUS_MAX_CONCEALED_OK 3  // concealed (PLC/FEC) frames reported as OK before muting (60 ms)
 #define OPUS_MAX_DATA_FRAME 1276 // (in bytes)   = CELT CBR BITRATE 510400
 
 /*************

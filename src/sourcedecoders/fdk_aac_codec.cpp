@@ -481,8 +481,18 @@ CAudioCodec::EDecError FdkAacCodec::Decode(const vector<uint8_t>& audio_frame, u
         return CAudioCodec::DECODER_ERROR_UNKNOWN;
     }
     const size_t output_size = size_t(pinfo->frameSize) * size_t(pinfo->numChannels);
+    bool bConcealed = false;
 
-    if(err == AAC_DEC_OK) {
+    if (err != AAC_DEC_OK && IS_DECODE_ERROR(err) && pinfo->frameSize > 0 && pinfo->numChannels > 0) {
+        /* bad frame (e.g. AAC_DEC_CRC_ERROR): fdk's output is its own error
+           concealment (IS_OUTPUT_VALID) - hand it to the receiver instead of
+           discarding it; the receiver decides how long to play concealed audio */
+        static unsigned long nConcealed = 0;
+        if (++nConcealed <= 10 || nConcealed % 100 == 0)
+            cerr << "fdk: frame concealed (error 0x" << hex << int(err) << dec << ", " << nConcealed << " so far)" << endl;
+        bConcealed = true;
+    }
+    else if(err == AAC_DEC_OK) {
         double d = 0.0;
         for(size_t i=0; i<output_size; i++) d += double(decode_buf[i]);
         //cerr << "energy in good frame " << (d/output_size) << endl;
@@ -531,7 +541,7 @@ CAudioCodec::EDecError FdkAacCodec::Decode(const vector<uint8_t>& audio_frame, u
             right[int(i)] = _REAL(decode_buf[2*i+1]);
         }
     }
-    return CAudioCodec::DECODER_ERROR_OK;
+    return bConcealed ? CAudioCodec::DECODER_ERROR_CONCEALED : CAudioCodec::DECODER_ERROR_OK;
 }
 
 void
