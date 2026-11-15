@@ -63,6 +63,7 @@ void SpeexResampler::Resample(CVector<_REAL>& rInput, CVector<_REAL>& rOutput)
     }
 
     if (output_frames_gen != iOutputBlockSize)
+        cerr << "SpeexResampler::Resample(): output_frames_gen(" << output_frames_gen << ") != iOutputBlockSize(" << iOutputBlockSize << ")" << endl;
 
     for (size_t i = 0; i < iOutputBlockSize; i++)
         rOutput[int(i)] = _REAL(vecfOutput[i]);
