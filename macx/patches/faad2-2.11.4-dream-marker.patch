@@ -1,0 +1,35 @@
+DREAM macOS port: marker function so DREAM can tell this faad2 build from a stock
+libfaad_drm (exported NeAACDecDreamDrmFixes(), returns 3).
+
+diff --git a/include/neaacdec.h b/include/neaacdec.h
+index 8733a44..ba905c7 100644
+--- a/include/neaacdec.h
++++ b/include/neaacdec.h
+@@ -252,6 +252,11 @@ NEAACDECAPI char NeAACDecAudioSpecificConfig(unsigned char *pBuffer,
+ NEAACDECAPI int NeAACDecGetVersion(char **faad_id_string,
+                                    char **faad_copyright_string);
+ 
++/* DREAM macOS port: returns a bit mask of the DRM fixes compiled in
++   (1 = HCR short-window codeword order, 2 = MPEG-4 PS in DRM mode).
++   Lets DREAM prefer this build over a stock libfaad_drm. */
++NEAACDECAPI int NeAACDecDreamDrmFixes(void);
++
+ #ifdef _WIN32
+   #pragma pack(pop)
+ #endif
+diff --git a/libfaad/decoder.c b/libfaad/decoder.c
+index 4de3e37..6dd11d1 100644
+--- a/libfaad/decoder.c
++++ b/libfaad/decoder.c
+@@ -86,6 +86,11 @@ int NeAACDecGetVersion(char **faad_id_string,
+     return 0;
+ }
+ 
++int NeAACDecDreamDrmFixes(void)
++{
++    return 1 | 2;
++}
++
+ char* NeAACDecGetErrorMessage(unsigned char errcode)
+ {
+     if (errcode >= NUM_ERROR_MESSAGES)

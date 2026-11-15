@@ -56,6 +56,19 @@ static const LIBFUNC FaadLibFuncs[] = {
     { "NeAACDecDecode",  (void**)&NeAACDecDecode,  (void*)nullptr },
     { nullptr, nullptr, nullptr }
 };
+/* faad2 built by macx/build-faad-drm.sh exports NeAACDecDreamDrmFixes() (HCR short-window
+   fix + MPEG-4 PS in DRM). Such a build is preferred over a stock libfaad_drm wherever it is
+   in the search path (e.g. .deps/<arch>/lib vs /opt/homebrew/lib). */
+typedef int (NeAACDecDreamDrmFixes_t)(void);
+static NeAACDecDreamDrmFixes_t *NeAACDecDreamDrmFixes;
+static const LIBFUNC FaadLibFuncsFixed[] = {
+    { "NeAACDecOpen",    (void**)&NeAACDecOpen,    (void*)nullptr },
+    { "NeAACDecInitDRM", (void**)&NeAACDecInitDRM, (void*)nullptr },
+    { "NeAACDecClose",   (void**)&NeAACDecClose,   (void*)nullptr },
+    { "NeAACDecDecode",  (void**)&NeAACDecDecode,  (void*)nullptr },
+    { "NeAACDecDreamDrmFixes", (void**)&NeAACDecDreamDrmFixes, (void*)nullptr },
+    { nullptr, nullptr, nullptr }
+};
 # if defined(_WIN32)
 static const char* FaadLibNames[] = { "faad2_drm.dll", "libfaad2_drm.dll", "faad_drm.dll", "libfaad2.dll", nullptr };
 # elif defined(__APPLE__)
@@ -120,7 +133,14 @@ AacCodec::AacCodec() :
 #ifndef USE_FAAD2_LIBRARY
     if (hFaadLib == nullptr)
     {
-        hFaadLib = CLibraryLoader::Load(FaadLibNames, FaadLibFuncs);
+        hFaadLib = CLibraryLoader::Load(FaadLibNames, FaadLibFuncsFixed);
+        if (!hFaadLib)
+        {
+            hFaadLib = CLibraryLoader::Load(FaadLibNames, FaadLibFuncs);
+            if (hFaadLib)
+                cerr << "Warning: stock FAAD2 DRM library: grouped short blocks and MPEG-4 PS"
+                        " are decoded wrongly (build macx/build-faad-drm.sh)" << endl;
+        }
         if (!hFaadLib)
             cerr << "No usable FAAD2 aac decoder library found" << endl;
         else

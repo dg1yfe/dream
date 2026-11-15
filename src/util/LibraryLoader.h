@@ -108,9 +108,11 @@ public:
 	     2. @loader_path                    (directory of the dream binary)
 	     3. @rpath                          (LC_RPATH entries, e.g. .deps/<arch>/lib in dev builds)
 	     4. each directory in $DREAM_LIB_PATH (colon separated)
-	     5. /opt/homebrew/lib               (Homebrew, Apple Silicon)
-	     6. /usr/local/lib                  (Homebrew Intel / manual installs)
-	     7. the bare name                   (dyld default search)
+	     5. DREAM_DEPS_LIBDIR               (compile-time define, e.g. <repo>/.deps/arm64/lib,
+	                                         so self-built codec libs win over Homebrew's)
+	     6. /opt/homebrew/lib               (Homebrew, Apple Silicon)
+	     7. /usr/local/lib                  (Homebrew Intel / manual installs)
+	     8. the bare name                   (dyld default search)
 	   A candidate that loads but fails the symbol/check callback is skipped,
 	   so e.g. a non-DRM libfaac in an earlier location does not hide a good one. */
 	static std::vector<std::string> Candidates(const char** LibraryNames)
@@ -134,6 +136,9 @@ public:
 				start = end + 1;
 			}
 		}
+#ifdef DREAM_DEPS_LIBDIR
+		dirs.push_back(DREAM_DEPS_LIBDIR);
+#endif
 		dirs.push_back("/opt/homebrew/lib");
 		dirs.push_back("/usr/local/lib");
 

@@ -1,0 +1,39 @@
+DREAM macOS port: faad2 2.11.4 DRM fix 1/2 - HCR codeword order for grouped short windows.
+
+In ER AAC with HCR (always used in DRM, ETSI ES 201 980 5.4.1) the codewords of
+eight-short-window frames are presorted unit-wise (unit = 4 lines): unit u of
+window 0, unit u of window 1, ... (ISO/IEC 14496-3 HCR; Fraunhofer patent
+US 6975254 'Nth window, 1st unit' list; fdk-aac HcrInit()/HcrReorder...()). faad2
+took 4*window_group_length consecutive lines of the grouped spectrum instead,
+which equals the spec order only for sfb width 4 or ungrouped windows, so
+transient frames decoded wrongly without an error. After the fix faad2 matches
+fdk-aac to 1 LSB on short-block streams from both fdk-aac (DREAM patch) and
+faac 1.28 DRM encoders. Long blocks are unchanged.
+
+diff --git a/libfaad/hcr.c b/libfaad/hcr.c
+index 71fa480..91c294f 100644
+--- a/libfaad/hcr.c
++++ b/libfaad/hcr.c
+@@ -291,9 +291,21 @@ uint8_t reordered_spectral_data(NeAACDecStruct *hDecoder, ic_stream *ics,
+                                 uint16_t cws;
+ 
+                                 /* read codewords until end of sfb or end of window group (shouldn't only 1 trigger?) */
++                                /* Within a window group the lines of an sfb are stored window by
++                                   window ([win0: width lines][win1: width lines]...). HCR orders
++                                   the codewords unit-wise (unit = 4 lines): unit w_idx of window 0,
++                                   unit w_idx of window 1, ... (ISO/IEC 14496-3 HCR, Fraunhofer
++                                   US 6975254; fdk-aac HcrInit()/HcrReorderQuantizedSpectral-
++                                   Coefficients()). The old code took 4*window_group_length
++                                   consecutive lines instead, which is only the same for sfb
++                                   width 4 or ungrouped windows (DREAM macOS port patch). */
++                                const uint16_t win_width = sect_sfb_size / ics->window_group_length[g];
++                                const uint8_t cws_per_unit = 4 / inc;
++
+                                 for (cws = 0; (cws < group_cws_count) && ((cws + w_idx*group_cws_count) < sect_sfb_size); cws++)
+                                 {
+-                                    uint16_t sp = sp_offset[g] + ics->sect_sfb_offset[g][sfb] + inc * (cws + w_idx*group_cws_count);
++                                    uint16_t sp = sp_offset[g] + ics->sect_sfb_offset[g][sfb] +
++                                        (cws / cws_per_unit) * win_width + 4 * w_idx + inc * (cws % cws_per_unit);
+ 
+                                     /* read and decode PCW */
+                                     if (!PCWs_done)

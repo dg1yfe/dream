@@ -1,0 +1,28 @@
+DREAM macOS port: faad2 2.11.4 DRM fix 2/2 - decode MPEG-4 PS in DRM mode.
+
+ETSI ES 201 980 V4.x clause 5.4.3: 'The MPEG PS tool as specified in MPEG-4 Audio
+is used'; table 14: bs_extension_id 2 = MPEG PARAMETRIC STEREO, 0 'shall not be
+used'. faad2 parsed MPEG PS data in DRM mode but then always ran the legacy DRM
+PS synthesis (drm_ps_decode, id 0), which without DRM PS data just copies L to
+R: PS streams came out mono without an error. Now the MPEG PS synthesis is used
+whenever MPEG PS data was received; legacy DRM PS streams behave as before.
+
+diff --git a/libfaad/sbr_dec.c b/libfaad/sbr_dec.c
+index 13e66ff..0c07c7d 100644
+--- a/libfaad/sbr_dec.c
++++ b/libfaad/sbr_dec.c
+@@ -661,9 +661,13 @@ uint8_t sbrDecodeSingleFramePS(sbr_info *sbr, real_t *left_channel, real_t *righ
+     }
+ 
+     /* perform parametric stereo */
++    /* DRM: ETSI ES 201 980 V3+ uses MPEG-4 PS (bs_extension_id 2, "id 0 shall
++       not be used"); the legacy DRM PS (id 0) is only used when it is the PS
++       data actually received (DREAM macOS port patch). */
+ #ifdef DRM_PS
+-    if (sbr->Is_DRM_SBR)
++    if (sbr->Is_DRM_SBR && sbr->ps == NULL)
+     {
++        /* legacy DRM PS, or no PS data yet (drm_ps_decode copies L to R) */
+         drm_ps_decode(sbr->drm_ps, (sbr->ret > 0), X_left, X_right);
+     } else {
+ #endif
