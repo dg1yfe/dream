@@ -62,7 +62,21 @@ CAudioCodec::InitCodecList()
 		/* Null codec, MUST be the first */
 		CodecList.push_back(new NullCodec);
 
-		/* AAC */
+		/* AAC. Encoder preference: libxaac, then fdk-aac, then faac.
+		   Decoder preference: fdk-aac (if loaded), then faad2. */
+#ifdef HAVE_LIBXAAC
+        /* libxaac (DRM patched, Apache-2.0): encoder only, preferred DRM AAC encoder */
+        XaacCodec* xaac = new XaacCodec;
+        if (xaac->CanEncode(CAudioParam::AC_AAC))
+        {
+            cerr << "Adding xaac codec (DRM encoder: yes)" << endl;
+            CodecList.push_back(xaac);
+        }
+        else
+        {
+            delete xaac;
+        }
+#endif
 #ifdef HAVE_LIBFDK_AAC
         /* fdk-aac is loaded at run time: only use it if it is there */
         FdkAacCodec* fdk = new FdkAacCodec;
@@ -78,19 +92,6 @@ CAudioCodec::InitCodecList()
         {
             cerr << "FDK codec not usable, not added" << endl;
             delete fdk;
-        }
-#endif
-#ifdef HAVE_LIBXAAC
-        /* libxaac (DRM patched, Apache-2.0): DRM encoder after fdk-aac, before faac */
-        XaacCodec* xaac = new XaacCodec;
-        if (xaac->CanEncode(CAudioParam::AC_AAC))
-        {
-            cerr << "Adding xaac codec (DRM encoder: yes)" << endl;
-            CodecList.push_back(xaac);
-        }
-        else
-        {
-            delete xaac;
         }
 #endif
         CodecList.push_back(new AacCodec);

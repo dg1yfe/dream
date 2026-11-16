@@ -109,12 +109,12 @@ fi
 
 # --- cases: name | environment | transmitter options | expected channels ---------
 CASES='
-fdk-aac-lc-mono    |                       | --codec AAC --aacmode mono                | mono
-fdk-aac-lc-stereo  |                       | --codec AAC --aacmode stereo              | stereo
-fdk-aac-lc-12k     |                       | --codec AAC --aacmode mono --aacrate 12000 | mono
-fdk-aac-sbr        |                       | --codec AAC --aacmode mono --sbr 1        | mono
-fdk-aac-sbr-stereo |                       | --codec AAC --aacmode stereo --sbr 1      | stereo
-fdk-aac-sbr-ps     |                       | --codec AAC --aacmode pstereo --sbr 1     | stereo
+fdk-aac-lc-mono    | DREAM_NO_XAAC=1        | --codec AAC --aacmode mono                | mono
+fdk-aac-lc-stereo  | DREAM_NO_XAAC=1        | --codec AAC --aacmode stereo              | stereo
+fdk-aac-lc-12k     | DREAM_NO_XAAC=1        | --codec AAC --aacmode mono --aacrate 12000 | mono
+fdk-aac-sbr        | DREAM_NO_XAAC=1        | --codec AAC --aacmode mono --sbr 1        | mono
+fdk-aac-sbr-stereo | DREAM_NO_XAAC=1        | --codec AAC --aacmode stereo --sbr 1      | stereo
+fdk-aac-sbr-ps     | DREAM_NO_XAAC=1        | --codec AAC --aacmode pstereo --sbr 1     | stereo
 xaac-aac-lc-mono   | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono                | mono
 xaac-aac-lc-stereo | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode stereo              | stereo
 xaac-aac-lc-12k    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono --aacrate 12000 | mono
@@ -123,7 +123,7 @@ xaac-aac-sbr-stereo | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode stereo --sb
 xaac-aac-sbr-ps    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode pstereo --sbr 1     | stereo
 xaac-sbr-12k       | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode mono --sbr 1 --aacrate 12000 | mono
 xaac-sbr-ps-12k    | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode pstereo --sbr 1 --aacrate 12000 | stereo
-fdk-sbr-auto       |                       | --codec AAC --aacmode auto --sbr 1 --aacrate 12000 | stereo
+fdk-sbr-auto       | DREAM_NO_XAAC=1        | --codec AAC --aacmode auto --sbr 1 --aacrate 12000 | stereo
 xaac-sbr-auto      | DREAM_NO_FDK_ENCODER=1 | --codec AAC --aacmode auto --sbr 1 --aacrate 12000 | stereo
 faac-aac-lc-mono   | DREAM_NO_FDK_ENCODER=1 DREAM_NO_XAAC=1 | --codec AAC --aacmode mono   | mono
 faac-aac-lc-stereo | DREAM_NO_FDK_ENCODER=1 DREAM_NO_XAAC=1 | --codec AAC --aacmode stereo | stereo
@@ -175,12 +175,18 @@ for src in $SOURCES; do
         # codec provenance: the encoder the case name promises must have been available
         prov=""
         case "$name" in
-            fdk-*) grep -q "FDK library loaded:.*(DRM encoder: yes)" "$dir/tx.log" ||
-                       prov="fdk-aac DRM encoder NOT loaded (tx.log) - faac fallback would have encoded this" ;;
+            fdk-*) if ! grep -q "FDK library loaded:.*(DRM encoder: yes)" "$dir/tx.log"; then
+                       prov="fdk-aac DRM encoder NOT loaded (tx.log) - faac fallback would have encoded this"
+                   elif grep -q "xaac: DRM encoder opened" "$dir/tx.log"; then
+                       prov="libxaac encoded this case, not fdk-aac (tx.log)"
+                   fi ;;
             xaac-*) grep -q "xaac: DRM encoder opened" "$dir/tx.log" ||
                        prov="libxaac DRM encoder NOT used (tx.log)" ;;
-            faac-*) grep -q "Got FAAC library" "$dir/tx.log" ||
-                       prov="libfaac_drm NOT loaded (tx.log)" ;;
+            faac-*) if ! grep -q "Got FAAC library" "$dir/tx.log"; then
+                        prov="libfaac_drm NOT loaded (tx.log)"
+                    elif grep -q "xaac: DRM encoder opened" "$dir/tx.log"; then
+                        prov="libxaac encoded this case, not faac (tx.log)"
+                    fi ;;
         esac
         # "auto" at the default channel (20.4 kbit/s audio payload) must
         # choose parametric stereo, and the receiver must see it in the SDC
