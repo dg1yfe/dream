@@ -42,7 +42,7 @@ public slots:
     virtual void SetInputDevice(QString);
     virtual void SetOutputDevice(QString);
     virtual void Restart();
-    virtual void Stop();
+    virtual void Stop() override;
     virtual void SetSettings(CSettings* pNewSettings) override;
     virtual void SetTextMessage(std::string);
     virtual void ClearTextMessage();

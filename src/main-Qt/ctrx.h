@@ -11,6 +11,8 @@ public:
     explicit CTRx(QObject *parent = nullptr);
     virtual int GetFrequency()=0;
     virtual void run() = 0;
+    /* ask run() to return; thread-safe (sets the run state only) */
+    virtual void Stop() = 0;
 
 signals:
     void InputDeviceChanged(const std::string&);

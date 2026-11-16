@@ -67,6 +67,14 @@ class Worker: public QThread
       trx->moveToThread(this);
     }
     void run() override { trx->run(); }
+    /* the working thread must have ended before the QThread is destroyed,
+       e.g. while closing the sound card takes a moment (CoreAudio) */
+    void stopAndWait() {
+      if (isRunning()) {
+        trx->Stop();
+        wait();
+      }
+    }
     private:
     CTRx* trx;
 };
@@ -84,7 +92,6 @@ void guirx(CSettings &Settings, QApplication &app) {
 #endif
   trx = new CRx(DRMReceiver);
   Worker worker(trx);
-  QObject::connect(&worker, SIGNAL(finished()), &app, SLOT(OnWorkingThreadFinished()), Qt::QueuedConnection);
 
 #ifdef HAVE_LIBHAMLIB
   DRMReceiver.SetTuner(&rig);
@@ -105,6 +112,7 @@ void guirx(CSettings &Settings, QApplication &app) {
 
   /* Set main window */
   app.exec();
+  worker.stopAndWait();
 
 #ifdef HAVE_LIBHAMLIB
   if (DRMReceiver.GetDownstreamRSCIOutEnabled()) {
@@ -129,7 +137,8 @@ void consolerx(CSettings &Settings, QCoreApplication &app) {
   QObject::connect(&worker, SIGNAL(finished()), &app, SLOT(quit()), Qt::QueuedConnection);
 
   worker.start();
-  app.exec(); 
+  app.exec();
+  worker.stopAndWait();
   trx->SaveSettings();
 }
 
@@ -149,6 +158,7 @@ void txgc(CSettings &Settings, QCoreApplication &app, bool gui = true)
   }
   worker.start();
   app.exec();
+  worker.stopAndWait();
   trx->SaveSettings();
 }
 

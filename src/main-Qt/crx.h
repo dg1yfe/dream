@@ -80,7 +80,7 @@ public slots:
     virtual void SetInputDevice(QString);
     virtual void SetOutputDevice(QString);
     virtual void Start();
-    virtual void Stop();
+    virtual void Stop() override;
     virtual void Restart();
     virtual void SetSettings(CSettings* pNewSettings) override;
     virtual bool IsReceiver() const override { return true;}
